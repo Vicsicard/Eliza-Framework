@@ -11,7 +11,9 @@ import {
 } from "@ai16z/eliza/src/types";
 import { idlFactory } from "../canisters/pick-pump/index.did";
 import { _SERVICE } from "../canisters/pick-pump/index.did.d";
-import { ActorCreator, CreateMemeTokenArg } from "../types";
+import { idlFactory as bobidlFactory } from "../canisters/launch-bob/index.did";
+import { _SERVICE as _BOB_SERVICE, CreateTokenArg } from "../canisters/launch-bob/index.did.d";
+import { ActorCreator, CreateMemeTokenArg, Platform } from "../types";
 import { unwrapOption, wrapOption } from "../utils/common/types/options";
 import { unwrapRustResultMap } from "../utils/common/types/results";
 import { icpWalletProvider } from "../providers/wallet";
@@ -45,8 +47,39 @@ Respond with a JSON markdown block containing only the generated values.`;
 
 async function createTokenTransaction(
     creator: ActorCreator,
-    tokenInfo: CreateMemeTokenArg
+    tokenInfo: CreateMemeTokenArg,
+    platform: Platform,
 ): Promise<any> {
+    if (platform == 'launch-bob') {
+        const actor: _BOB_SERVICE = await creator(
+            bobidlFactory,
+            "h7uwa-hyaaa-aaaam-qbgvq-cai"
+        );
+
+        const result = await actor.create_token({
+            name: tokenInfo.name ?? "AI Token",
+            ticker: tokenInfo.symbol ?? "AIT",
+            description: tokenInfo.description ?? "A token created by an ai.",
+            image: "https://icptoken.default.logo",
+            maybe_twitter: wrapOption(tokenInfo.twitter),
+            maybe_website: wrapOption(tokenInfo.website),
+            maybe_telegram: wrapOption(tokenInfo.telegram),
+        } as CreateTokenArg);
+
+        return unwrapRustResultMap(
+            result,
+            (ok) => ({
+                ...ok,
+                twitter: unwrapOption(ok.twitter),
+                website: unwrapOption(ok.website),
+                telegram: unwrapOption(ok.telegram),
+            }),
+            (err) => {
+                throw new Error(`Token creation failed: ${err}`);
+            }
+        );
+    }
+
     const actor: _SERVICE = await creator(
         idlFactory,
         "bn4fo-iyaaa-aaaap-akp6a-cai"
@@ -65,12 +98,7 @@ async function createTokenTransaction(
 
     return unwrapRustResultMap(
         result,
-        (ok) => ({
-            ...ok,
-            twitter: unwrapOption(ok.twitter),
-            website: unwrapOption(ok.website),
-            telegram: unwrapOption(ok.telegram),
-        }),
+        (ok) => ({}),
         (err) => {
             throw new Error(`Token creation failed: ${err}`);
         }
@@ -139,7 +167,7 @@ export const executeCreateToken: Action = {
                 website: response.website,
                 twitter: response.twitter,
                 telegram: response.telegram,
-            });
+            }, 'launch-bob');
 
             console.log("Token created successfully:", createTokenResult);
             const responseMsg = {
