@@ -1,39 +1,187 @@
-# GOAT Plugin
-[GOAT](https://ohmygoat.dev/) 🐐 (Great Onchain Agent Toolkit) is an open-source framework for adding blockchain tools such as wallets, being able to hold or trade tokens, or interacting with blockchain smart contracts, to your AI agent.
+# Autonomous Trading System Documentation
+Version 1.1
 
-This plugin integrates GOAT with Eliza, giving your agent the ability to interact with many different protocols. The current setup adds onchain capabilities to your agent to send and check balances of ETH and USDC. Add all the capabilities you need by adding more plugins (read below for more information)!
+## Table of Contents
+1. [System Overview](#system-overview)
+2. [Plugin Architecture](#plugin-architecture)
+3. [Core Components](#core-components)
+4. [Configuration](#configuration)
+5. [Trading Logic](#trading-logic)
+6. [Monitoring and Alerts](#monitoring-and-alerts)
+7. [Safety Mechanisms](#safety-mechanisms)
 
-## Configure GOAT for your use case
-1. Configure the chain you want to use by updating the `wallet.ts` file (see all available chains at [https://ohmygoat.dev/chains](https://ohmygoat.dev/chains))
-2. Add the plugins you need to your `getOnChainActions` function (uniswap, polymarket, etc. see all available plugins at [https://ohmygoat.dev/chains-wallets-plugins](https://ohmygoat.dev/chains-wallets-plugins))
-3. Build the project running `pnpm build`
-4. Add the necessary environment variables to set up your wallet and plugins
-5. Run your agent!
+## 1. System Overview
+The Autonomous Trading System is built on Eliza's plugin architecture, enabling automated token trading on the Solana blockchain. The system integrates:
+- GOAT SDK for core blockchain interactions
+- Solana Plugin for trading execution
+- DexScreener for market data
+- Twitter integration for trade alerts
+- CoinGecko for additional market data
 
-## Common Issues
-1. **Agent not executing an action**:
-    - If you are also using the EVM Plugin, sometimes the agent might confuse the action name with an EVM Plugin action name instead of the GOAT Plugin action. Removing the EVM Plugin should fix this issue. There is no need for you to use both plugins at the same time.
-    - If you are using Trump as a character it might be tricky to get them to perform any action since the character is full of prompts that aim to change the topic of the conversation. To fix this try using a different character or create your own with prompts that are more suitable to what the agent is supposed to do.
+## 2. Plugin Architecture
 
-## Plugins
-GOAT itself has several plugins for interacting with different protocols such as Polymarket, Uniswap, and more. (see all available plugins at [https://ohmygoat.dev/chains-wallets-plugins](https://ohmygoat.dev/chains-wallets-plugins))
+### Core Components
+- **WalletAdapter**
+  - Implements WalletClient interface
+  - Handles balance type conversions
+  - Manages chain interactions
+  - Provides portfolio tracking
 
-You can easily add them by installing them and adding them to the `getOnChainActions` function:
+- **Plugin-Solana**
+  - Wallet management
+  - Trade execution
+  - Token validation
 
+- **Client-Twitter**
+  - Trade notifications
+  - Automated alerts
+
+## 3. Core Components
+
+### WalletAdapter Implementation
 ```typescript
-const tools = getOnChainActions({
-  wallet: walletClient,
-  plugins: [
-    sendETH(),
-    erc20({ tokens: [USDC, PEPE] }),
-    polymarket(),
-    uniswap(),
-    // ...
-  ],
-})
+class WalletAdapter implements WalletClient {
+    private provider: WalletProvider;
+
+    async balanceOf(tokenAddress: string): Promise<Balance> {
+        const rawBalance = await this.provider.balanceOf(tokenAddress);
+        const isSol = this.provider.getChain() === "solana";
+        return {
+            value: BigInt(Math.floor(rawBalance * Math.pow(10, isSol ? 9 : 6))),
+            decimals: isSol ? 9 : 6
+        };
+    }
+
+    getChain(): Chain {
+        return "solana" as Chain;
+    }
+
+    // Additional trade execution methods...
+}
 ```
 
-## Wallets
-GOAT supports many different wallets from key pairs to [Crossmint Smart Wallets](https://docs.crossmint.com/wallets/smart-wallets/overview) and Coinbase.
+### Dependencies
+```json
+{
+    "@ai16z/eliza": "workspace:*",
+    "@goat-sdk/core": "0.3.8",
+    "@goat-sdk/plugin-coingecko": "^0.1.0",
+    "@goat-sdk/plugin-erc20": "0.1.7",
+    "@ai16z/client-twitter": "workspace:*",
+    "@ai16z/plugin-solana": "workspace:*"
+}
+```
 
-Read more about wallets at [https://ohmygoat.dev/wallets](https://ohmygoat.dev/wallets).
+## 4. Configuration
+
+### Environment Variables
+```env
+# Solana Configuration
+RPC_URL=your_rpc_url
+WALLET_PUBLIC_KEY=your_solana_public_key
+
+# DexScreener
+DEXSCREENER_WATCHLIST_ID=your_watchlist_id
+DEXSCREENER_API_KEY=your_api_key
+UPDATE_INTERVAL=300
+
+# Twitter Integration
+TWITTER_ENABLED=true
+TWITTER_USERNAME=your_username
+TWITTER_DRY_RUN=false
+
+# Optional
+COINGECKO_API_KEY=your_api_key
+```
+
+## 5. Trading Logic
+
+### Safety Limits
+```typescript
+const SAFETY_LIMITS = {
+    MAX_POSITION_SIZE: 0.1,    // 10% of liquidity
+    MAX_SLIPPAGE: 0.05,        // 5% slippage
+    MIN_LIQUIDITY: 1000,       // $1000 minimum liquidity
+    MAX_PRICE_IMPACT: 0.03,    // 3% price impact
+    STOP_LOSS: 0.15,           // 15% stop loss
+    MIN_TRUST_SCORE: 0.4,      // Minimum trust score
+    DETERIORATION_THRESHOLD: 0.2,  // 20% deterioration triggers sell
+    MIN_VOLUME_RATIO: 0.5,     // Minimum volume ratio
+    MAX_RISK_INCREASE: 0.3     // Maximum risk increase
+}
+```
+
+### Trade Conditions
+
+#### Buy Conditions
+- Token in DexScreener watchlist
+- Sufficient liquidity (>$1000)
+- Trust score above minimum (>0.4)
+- Not currently in position
+- Safe position size available
+
+#### Sell Conditions
+- Stop Loss Hit (15% drop)
+- Metric Deterioration:
+  - Price drop >20%
+  - Volume drop >20%
+  - Liquidity drop >20%
+- Risk Increase:
+  - Trust score deterioration >30%
+
+## 6. Monitoring and Alerts
+
+### Position Tracking
+```typescript
+interface Position {
+    token: string;
+    entryPrice: number;
+    amount: number;
+    timestamp: number;
+    sold?: boolean;
+    initialMetrics: {
+        trustScore: number;
+        volume24h: number;
+        liquidity: { usd: number };
+        riskLevel: "LOW" | "MEDIUM" | "HIGH";
+    };
+}
+```
+
+### Twitter Alerts
+```
+🤖 Trade Alert | <time>
+<token> | $<amount>
+Trust: <score>%
+Risk: <level>
+
+📊 Market Data:
+24h Change: <+/-percentage>%
+Volume: $<amount>M
+Liquidity: $<amount>M
+
+#SolanaDefi #Trading <token>
+```
+
+## 7. Safety Mechanisms
+
+### Position Management
+- Maximum 10% of token liquidity
+- Minimum liquidity requirements
+- Risk-adjusted position sizing
+- Continuous metric monitoring
+- Automatic loss prevention
+
+### Error Handling
+- Transaction retry logic
+- Slippage protection
+- Failed trade recovery
+- Portfolio balance validation
+- Chain interaction verification
+
+### Risk Management
+- Trust score evaluation
+- Continuous position monitoring
+- Automatic stop loss
+- Market deterioration checks
+- Portfolio diversification limits
