@@ -186,10 +186,10 @@ const autonomousTradeAction: Action = {
                         throw new Error("DexScreener watchlist URL not configured");
                     }
 
-                    // Fetch watchlist data
-                    const response = await fetch(watchlistUrl);
-                    const data = await response.json();
+                    elizaLogger.log("Fetching DexScreener data from:", watchlistUrl);
+                    const data = await fetchDexScreenerData(watchlistUrl);
                     
+                    // Process pairs
                     for (const pair of data.pairs) {
                         try {
                             if (!validateWalletAddress(pair.baseToken?.address)) {
@@ -244,15 +244,15 @@ const autonomousTradeAction: Action = {
                         }
                     }
                 } catch (tradingError) {
-                    elizaLogger.error(`Trading cycle error: ${tradingError.message}`);
+                    elizaLogger.error("Trading cycle error:", tradingError);
                 }
             };
 
-            // Start periodic checks
-            const interval = setInterval(startTrading, TRADE_SETTINGS.CHECK_INTERVAL);
+            // Start periodic checks with stored ID
+            const intervalId = setInterval(startTrading, TRADE_SETTINGS.CHECK_INTERVAL);
             
-            // Store interval reference
-            runtime.cacheManager.set("trading_interval", interval);
+            // Store just the numeric ID
+            await runtime.cacheManager.set("trading_interval_id", intervalId[Symbol.toPrimitive]());
             
             // Execute initial check
             await startTrading();
@@ -278,9 +278,9 @@ const autonomousTradeAction: Action = {
         }
     },
     cleanup: async (runtime: IAgentRuntime) => {
-        const interval = await runtime.cacheManager.get<Timeout>("trading_interval");
-        if (interval) {
-            clearInterval(interval);
+        const intervalId = await runtime.cacheManager.get<number>("trading_interval_id");
+        if (intervalId) {
+            clearInterval(intervalId);
         }
     }
 };
@@ -293,6 +293,35 @@ async function executeTrade(params: {
 }) {
     // Implement actual trade execution logic here
     return { success: true };
+}
+
+// Add this helper function
+async function fetchDexScreenerData(url: string) {
+    try {
+        const response = await fetch(url);
+        
+        // Check if response is OK
+        if (!response.ok) {
+            throw new Error(`DexScreener API error: ${response.status} ${response.statusText}`);
+        }
+
+        // Check content type
+        const contentType = response.headers.get("content-type");
+        if (!contentType?.includes("application/json")) {
+            throw new Error(`Invalid content type: ${contentType}`);
+        }
+
+        const data = await response.json();
+        if (!data || !data.pairs) {
+            throw new Error("Invalid response format from DexScreener");
+        }
+
+        return data;
+    } catch (error) {
+        elizaLogger.error("DexScreener API error:", error);
+        elizaLogger.error("Failed URL:", url);
+        throw new Error(`Failed to fetch DexScreener data: ${error.message}`);
+    }
 }
 
 export async function getOnChainActions<TWalletClient extends WalletClient>({
