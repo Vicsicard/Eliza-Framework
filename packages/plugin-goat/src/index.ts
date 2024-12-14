@@ -122,6 +122,28 @@ const REQUIRED_SETTINGS = {
     COINGECKO_API_KEY: "CoinGecko API key"
 } as const;
 
+// Add near the top imports
+interface ExtendedPlugin extends Plugin {
+    name: string;
+    description: string;
+    evaluators: any[];
+    providers: any[];
+    actions: any[];
+    services: any[];
+    autoStart?: boolean;
+}
+
+// Add this helper function
+const validateSolanaAddress = (address: string | undefined): boolean => {
+    if (!address) return false;
+    try {
+        // Check if it's a valid base58 string and proper length
+        return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+    } catch {
+        return false;
+    }
+};
+
 async function createGoatPlugin(
     getSetting: (key: string) => string | undefined,
     runtime?: IAgentRuntime
@@ -147,9 +169,18 @@ async function createGoatPlugin(
 
     try {
         elizaLogger.log("Initializing Solana connection...");
-        connection = new Connection(runtime?.getSetting("RPC_URL") || "https://api.mainnet-beta.solana.com");
-        const walletPublicKey = new PublicKey(getSetting("WALLET_PUBLIC_KEY") || "");
+        const walletAddress = getSetting("WALLET_PUBLIC_KEY");
         
+        // Validate wallet address before creating connection
+        if (!validateSolanaAddress(walletAddress)) {
+            elizaLogger.error(`Invalid Solana wallet address format: ${walletAddress}`);
+            throw new Error("Invalid wallet address format - must be base58 encoded, 32-44 characters");
+        }
+
+        connection = new Connection(runtime?.getSetting("RPC_URL") || "https://api.mainnet-beta.solana.com");
+        const walletPublicKey = new PublicKey(walletAddress);
+        elizaLogger.log("Wallet validation successful:", walletPublicKey.toBase58());
+
         walletProvider = {
             connection,
             getChain: () => ({ type: "solana" }),
@@ -257,13 +288,15 @@ async function createGoatPlugin(
             tweetTrade
         });
 
-        const plugin: Plugin = {
+        // Then update the plugin creation
+        const plugin: ExtendedPlugin = {
             name: "[GOAT] Onchain Actions with Solana Integration",
             description: "Autonomous trading integration",
             evaluators: [trustEvaluator, ...(solana.evaluators || [])],
             providers: [walletProvider, trustScoreProvider, ...(solana.providers || [])],
             actions: [...customActions, ...(solana.actions || [])],
-            services: []
+            services: [],
+            autoStart: true
         };
 
         elizaLogger.log("GOAT plugin initialization completed successfully");
