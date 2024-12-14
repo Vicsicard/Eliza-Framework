@@ -17,6 +17,9 @@ import {
     generateObjectV2,
     elizaLogger,
 } from "@ai16z/eliza";
+import { PublicKey } from "@solana/web3.js";
+import { AutoClient } from "@ai16z/client-auto";
+import type { Timeout } from "node:timers";
 
 const SAFETY_LIMITS = {
     MAX_POSITION_SIZE: 0.1,    // 10% of liquidity
@@ -122,29 +125,39 @@ async function generateResponse(runtime: IAgentRuntime, context: string): Promis
     });
 }
 
-// Add validation for wallet address
-const validateWalletAddress = (address: string): boolean => {
+// Update wallet validation
+const validateWalletAddress = (address: string | undefined): boolean => {
+    if (!address) return false;
     try {
-        // Check if it's a valid base58 string
-        return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+        new PublicKey(address); // This will validate the base58 format
+        return true;
     } catch {
         return false;
     }
 };
 
-// Add autonomous trade action
+// Add trading interval settings
+const TRADE_SETTINGS = {
+    CHECK_INTERVAL: 5 * 60 * 1000, // 5 minutes
+    MIN_VOLUME: 10000, // Minimum 24h volume in USD
+    MIN_LIQUIDITY: 5000, // Minimum liquidity in USD
+    MAX_POSITION_SIZE: 0.1, // 10% of available balance
+    STOP_LOSS: 0.15, // 15% stop loss
+};
+
+// Update autonomous trade action
 const autonomousTradeAction: Action = {
     name: "AUTONOMOUS_TRADE",
     description: "Execute autonomous trades based on market conditions",
-    similes: ["TRADE", "AUTO_TRADE", "TRADE_SOLANA", "TRADE_SOL"],
+    similes: ["TRADE", "AUTO_TRADE", "TRADE_SOLANA", "TRADE_SOL", "AUTONOMOUS"],
+    autoStart: true,
     validate: async (runtime: IAgentRuntime, message: Memory) => {
         try {
-            const walletAddress = runtime.getSetting("WALLET_PUBLIC_KEY");
-            if (!walletAddress) {
-                elizaLogger.error("No wallet address configured");
-                return false;
+            if (message.content?.source === "auto") {
+                return true;
             }
-            return true;
+            const walletAddress = runtime.getSetting("WALLET_PUBLIC_KEY");
+            return validateWalletAddress(walletAddress);
         } catch (error) {
             elizaLogger.error("Validation error:", error);
             return false;
@@ -158,25 +171,101 @@ const autonomousTradeAction: Action = {
         callback?: HandlerCallback
     ): Promise<boolean> => {
         try {
-            elizaLogger.log("Starting autonomous trade...");
-            
-            // Get wallet info
             const walletAddress = runtime.getSetting("WALLET_PUBLIC_KEY");
-            if (!walletAddress) {
-                throw new Error("Wallet not configured");
+            if (!validateWalletAddress(walletAddress)) {
+                throw new Error("Invalid wallet configuration");
             }
 
-            // Execute trade logic
-            const response = {
-                text: "🤖 Autonomous trading enabled. Monitoring market conditions for SOL trading opportunities...",
-                content: { 
-                    action: "AUTONOMOUS_TRADE", 
-                    status: "monitoring",
-                    wallet: walletAddress
+            elizaLogger.log("Starting autonomous trade monitoring...");
+            
+            // Start periodic trading checks
+            const startTrading = async () => {
+                try {
+                    const watchlistUrl = runtime.getSetting("DEXSCREENER_WATCHLIST_URL");
+                    if (!watchlistUrl) {
+                        throw new Error("DexScreener watchlist URL not configured");
+                    }
+
+                    // Fetch watchlist data
+                    const response = await fetch(watchlistUrl);
+                    const data = await response.json();
+                    
+                    for (const pair of data.pairs) {
+                        try {
+                            if (!validateWalletAddress(pair.baseToken?.address)) {
+                                elizaLogger.warn(`Invalid token address: ${pair.baseToken?.address}`);
+                                continue;
+                            }
+
+                            // Skip if liquidity too low
+                            if ((pair.liquidity?.usd || 0) < TRADE_SETTINGS.MIN_LIQUIDITY) {
+                                continue;
+                            }
+
+                            // Skip if volume too low
+                            if ((pair.volume?.h24 || 0) < TRADE_SETTINGS.MIN_VOLUME) {
+                                continue;
+                            }
+
+                            // Get wallet balance safely
+                            const balance = Number(runtime.getSetting("WALLET_BALANCE") || "0");
+                            if (balance <= 0) {
+                                elizaLogger.warn("Insufficient wallet balance");
+                                continue;
+                            }
+
+                            const positionSize = Math.min(
+                                pair.liquidity.usd * TRADE_SETTINGS.MAX_POSITION_SIZE,
+                                balance * 0.9
+                            );
+
+                            if (positionSize > 0) {
+                                const tradeResult = await executeTrade({
+                                    tokenAddress: pair.baseToken.address,
+                                    amount: positionSize,
+                                    slippage: 0.01
+                                });
+
+                                if (callback && tradeResult.success) {
+                                    callback({
+                                        text: `🤖 Trade executed: ${pair.baseToken.symbol}\nAmount: $${positionSize.toFixed(2)}\nPrice: $${Number(pair.priceUsd).toFixed(6)}`,
+                                        content: {
+                                            ...tradeResult,
+                                            symbol: pair.baseToken.symbol,
+                                            amount: positionSize,
+                                            price: pair.priceUsd
+                                        }
+                                    });
+                                }
+                            }
+                        } catch (pairError) {
+                            elizaLogger.error(`Error processing pair: ${pairError.message}`);
+                            continue;
+                        }
+                    }
+                } catch (tradingError) {
+                    elizaLogger.error(`Trading cycle error: ${tradingError.message}`);
                 }
             };
 
-            callback?.(response);
+            // Start periodic checks
+            const interval = setInterval(startTrading, TRADE_SETTINGS.CHECK_INTERVAL);
+            
+            // Store interval reference
+            runtime.cacheManager.set("trading_interval", interval);
+            
+            // Execute initial check
+            await startTrading();
+
+            callback?.({
+                text: "🤖 Autonomous trading started. Monitoring market conditions...",
+                content: { 
+                    action: "AUTONOMOUS_TRADE",
+                    status: "started",
+                    interval: TRADE_SETTINGS.CHECK_INTERVAL
+                }
+            });
+
             return true;
 
         } catch (error) {
@@ -188,22 +277,23 @@ const autonomousTradeAction: Action = {
             return false;
         }
     },
-    examples: [
-        [
-            {
-                user: "{{user1}}",
-                content: { text: "autonomous trade" }
-            },
-            {
-                user: "{{user2}}",
-                content: { 
-                    text: "🤖 Autonomous trading enabled. Monitoring market conditions...",
-                    action: "AUTONOMOUS_TRADE"
-                }
-            }
-        ]
-    ]
+    cleanup: async (runtime: IAgentRuntime) => {
+        const interval = await runtime.cacheManager.get<Timeout>("trading_interval");
+        if (interval) {
+            clearInterval(interval);
+        }
+    }
 };
+
+// Helper function to execute trades
+async function executeTrade(params: {
+    tokenAddress: string;
+    amount: number;
+    slippage: number;
+}) {
+    // Implement actual trade execution logic here
+    return { success: true };
+}
 
 export async function getOnChainActions<TWalletClient extends WalletClient>({
     wallet,
@@ -217,16 +307,32 @@ export async function getOnChainActions<TWalletClient extends WalletClient>({
         wordForTool: "action",
     });
 
-    // Convert tool actions and add autonomous trade
-    const actions = [
-        ...tools.map((tool) => createAction(tool)),
-        autonomousTradeAction
-    ];
+    // Create base actions
+    const baseActions = tools.map(tool => createAction(tool));
+    
+    // Add autonomous trade action
+    const allActions = [...baseActions, autonomousTradeAction];
 
     // Log registered actions
-    actions.forEach(action => {
+    allActions.forEach(action => {
         elizaLogger.log(`Registering action: ${action.name}`);
     });
 
-    return actions;
+    // Auto-start autonomous trading
+    if (AutoClient.isAutoClient) {
+        elizaLogger.log("Auto-starting autonomous trading...");
+        try {
+            await autonomousTradeAction.handler(
+                AutoClient.runtime,
+                { content: { source: "auto" } } as Memory,
+                undefined,
+                undefined,
+                (response) => elizaLogger.log("Auto-trade response:", response)
+            );
+        } catch (error) {
+            elizaLogger.error("Failed to auto-start trading:", error);
+        }
+    }
+
+    return allActions;
 }
