@@ -1,4 +1,4 @@
-import type { Plugin, IAgentRuntime } from "@ai16z/eliza";
+import type { Plugin, IAgentRuntime, Memory } from "@ai16z/eliza";
 import { getOnChainActions } from "./actions";
 import { coingecko } from "@goat-sdk/plugin-coingecko";
 import { elizaLogger } from "@ai16z/eliza";
@@ -137,8 +137,13 @@ interface ExtendedPlugin extends Plugin {
 const validateSolanaAddress = (address: string | undefined): boolean => {
     if (!address) return false;
     try {
-        // Check if it's a valid base58 string and proper length
-        return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+        // First check basic format
+        if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) {
+            return false;
+        }
+        // Then verify it's a valid Solana public key
+        const pubKey = new PublicKey(address);
+        return Boolean(pubKey.toBase58());
     } catch {
         return false;
     }
@@ -171,13 +176,18 @@ async function createGoatPlugin(
         elizaLogger.log("Initializing Solana connection...");
         const walletAddress = getSetting("WALLET_PUBLIC_KEY");
         
-        // Validate wallet address before creating connection
-        if (!validateSolanaAddress(walletAddress)) {
-            elizaLogger.error(`Invalid Solana wallet address format: ${walletAddress}`);
-            throw new Error("Invalid wallet address format - must be base58 encoded, 32-44 characters");
+        if (!walletAddress) {
+            throw new Error("No wallet address configured");
         }
 
+        // Create connection first
         connection = new Connection(runtime?.getSetting("RPC_URL") || "https://api.mainnet-beta.solana.com");
+        
+        // Then validate and create public key
+        if (!validateSolanaAddress(walletAddress)) {
+            throw new Error(`Invalid wallet address format: ${walletAddress}`);
+        }
+
         const walletPublicKey = new PublicKey(walletAddress);
         elizaLogger.log("Wallet validation successful:", walletPublicKey.toBase58());
 
@@ -298,6 +308,21 @@ async function createGoatPlugin(
             services: [],
             autoStart: true
         };
+
+        // Auto-start autonomous trading
+        if (runtime) {
+            elizaLogger.log("Auto-starting autonomous trading...");
+            const autonomousAction = plugin.actions.find(a => a.name === "AUTONOMOUS_TRADE");
+            if (autonomousAction) {
+                await autonomousAction.handler(
+                    runtime,
+                    { content: { source: "auto" } } as Memory,
+                    undefined,
+                    undefined,
+                    (response) => elizaLogger.log("Auto-trade response:", response)
+                );
+            }
+        }
 
         elizaLogger.log("GOAT plugin initialization completed successfully");
         return plugin;
