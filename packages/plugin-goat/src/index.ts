@@ -119,7 +119,8 @@ interface SolanaPluginExtended extends Plugin {
 const REQUIRED_SETTINGS = {
     WALLET_PUBLIC_KEY: "Solana wallet public key",
     DEXSCREENER_WATCHLIST_ID: "DexScreener watchlist ID",
-    COINGECKO_API_KEY: "CoinGecko API key"
+    COINGECKO_API_KEY: "CoinGecko API key",
+    DEXSCREENER_WATCHLIST_URL: "DexScreener watchlist URL"
 } as const;
 
 // Add near the top imports
@@ -291,7 +292,8 @@ async function createGoatPlugin(
                 coingecko({ apiKey: getSetting("COINGECKO_API_KEY") })
             ],
             dexscreener: {
-                watchlistUrl: `https://api.dexscreener.com/latest/dex/watchlists/${getSetting("DEXSCREENER_WATCHLIST_ID")}`,
+                watchlistUrl: getSetting("DEXSCREENER_WATCHLIST_URL") || 
+                             `https://api.dexscreener.com/latest/dex/watchlists/${getSetting("DEXSCREENER_WATCHLIST_ID")}`,
                 chain: "solana",
                 updateInterval: parseInt(getSetting("UPDATE_INTERVAL") || "300")
             },
