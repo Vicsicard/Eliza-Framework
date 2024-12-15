@@ -15,8 +15,7 @@ import { TrustScoreManager } from "../providers/trustScoreProvider.ts";
 import { TokenProvider } from "../providers/token.ts";
 import { WalletProvider } from "../providers/wallet.ts";
 import { TrustScoreDatabase } from "@ai16z/plugin-trustdb";
-import { Connection } from "@solana/web3.js";
-import { getWalletKey } from "../keypairUtils.ts";
+import { Connection, PublicKey } from "@solana/web3.js";
 
 const shouldProcessTemplate =
     `# Task: Decide if the recent messages should be processed for token recommendations.
@@ -79,201 +78,209 @@ Response should be a JSON object array inside a JSON markdown block. Correct res
 \`\`\``;
 
 async function handler(runtime: IAgentRuntime, message: Memory) {
-    console.log("Evaluating for trust");
-    const state = await runtime.composeState(message);
+    try {
+        console.log("[1] Starting trust evaluation");
+        const state = await runtime.composeState(message);
+        console.log("[2] State composed:", { agentId: state.agentId, roomId: state.roomId });
 
-    const { agentId, roomId } = state;
+        const { agentId, roomId } = state;
 
-    // Check if we should process the messages
-    const shouldProcessContext = composeContext({
-        state,
-        template: shouldProcessTemplate,
-    });
+        // Check if we should process the messages
+        const shouldProcessContext = composeContext({
+            state,
+            template: shouldProcessTemplate,
+        });
+        console.log("[3] Should process context created");
 
-    const shouldProcess = await generateTrueOrFalse({
-        context: shouldProcessContext,
-        modelClass: ModelClass.SMALL,
-        runtime,
-    });
+        const shouldProcess = await generateTrueOrFalse({
+            context: shouldProcessContext,
+            modelClass: ModelClass.SMALL,
+            runtime,
+        });
+        console.log("[4] Should process result:", shouldProcess);
 
-    if (!shouldProcess) {
-        console.log("Skipping process");
-        return [];
-    }
+        if (!shouldProcess) {
+            console.log("[5] Skipping process - shouldProcess is false");
+            return [];
+        }
 
-    console.log("Processing recommendations");
+        console.log("[6] Getting recent recommendations");
+        const recommendationsManager = new MemoryManager({
+            runtime,
+            tableName: "recommendations",
+        });
 
-    // Get recent recommendations
-    const recommendationsManager = new MemoryManager({
-        runtime,
-        tableName: "recommendations",
-    });
+        const recentRecommendations = await recommendationsManager.getMemories({
+            roomId,
+            count: 20,
+        });
+        console.log("[7] Recent recommendations retrieved:", recentRecommendations.length);
 
-    const recentRecommendations = await recommendationsManager.getMemories({
-        roomId,
-        count: 20,
-    });
+        const context = composeContext({
+            state: {
+                ...state,
+                recentRecommendations: formatRecommendations(recentRecommendations),
+            },
+            template: recommendationTemplate,
+        });
+        console.log("[8] Context composed for recommendations");
 
-    const context = composeContext({
-        state: {
-            ...state,
-            recentRecommendations: formatRecommendations(recentRecommendations),
-        },
-        template: recommendationTemplate,
-    });
+        const recommendations = await generateObjectArray({
+            runtime,
+            context,
+            modelClass: ModelClass.LARGE,
+        });
+        console.log("[9] Generated recommendations:", recommendations);
 
-    const recommendations = await generateObjectArray({
-        runtime,
-        context,
-        modelClass: ModelClass.LARGE,
-    });
+        if (!recommendations) {
+            console.log("[10] No recommendations generated");
+            return [];
+        }
 
-    console.log("recommendations", recommendations);
-
-    if (!recommendations) {
-        return [];
-    }
-
-    // If the recommendation is already known or corrupted, remove it
-    const filteredRecommendations = recommendations.filter((rec) => {
-        return (
-            !rec.alreadyKnown &&
-            (rec.ticker || rec.contractAddress) &&
-            rec.recommender &&
-            rec.conviction &&
-            rec.recommender.trim() !== ""
-        );
-    });
-
-    const { publicKey } = await getWalletKey(runtime, false);
-
-    for (const rec of filteredRecommendations) {
-        // create the wallet provider and token provider
-        const walletProvider = new WalletProvider(
-            new Connection(
-                runtime.getSetting("RPC_URL") ||
-                    "https://api.mainnet-beta.solana.com"
-            ),
-            publicKey
-        );
-        const tokenProvider = new TokenProvider(
-            rec.contractAddress,
-            walletProvider,
-            runtime.cacheManager
-        );
-
-        // TODO: Check to make sure the contract address is valid, it's the right one, etc
-
-        //
-        if (!rec.contractAddress) {
-            const tokenAddress = await tokenProvider.getTokenFromWallet(
-                runtime,
-                rec.ticker
+        const filteredRecommendations = recommendations.filter((rec) => {
+            return (
+                !rec.alreadyKnown &&
+                (rec.ticker || rec.contractAddress) &&
+                rec.recommender &&
+                rec.conviction &&
+                rec.recommender.trim() !== ""
             );
-            rec.contractAddress = tokenAddress;
-            if (!tokenAddress) {
-                // try to search for the symbol and return the contract address with they highest liquidity and market cap
-                const result = await tokenProvider.searchDexScreenerData(
-                    rec.ticker
+        });
+        console.log("[11] Filtered recommendations:", filteredRecommendations.length);
+
+        for (const rec of filteredRecommendations) {
+            try {
+                console.log("[12] Processing recommendation:", rec);
+                
+                const walletProvider = new WalletProvider(
+                    new Connection(
+                        runtime.getSetting("RPC_URL") ||
+                            "https://api.mainnet-beta.solana.com"
+                    ),
+                    new PublicKey(
+                        runtime.getSetting("SOLANA_PUBLIC_KEY") ??
+                            runtime.getSetting("WALLET_PUBLIC_KEY")
+                    )
                 );
-                const tokenAddress = result?.baseToken?.address;
-                rec.contractAddress = tokenAddress;
-                if (!tokenAddress) {
-                    console.warn("Could not find contract address for token");
+                console.log("[13] Wallet provider created");
+
+                const tokenProvider = new TokenProvider(
+                    rec.contractAddress,
+                    walletProvider,
+                    runtime.cacheManager
+                );
+                console.log("[14] Token provider created");
+
+                if (!rec.contractAddress) {
+                    console.log("[15] No contract address, attempting to find it");
+                    const tokenAddress = await tokenProvider.getTokenFromWallet(
+                        runtime,
+                        rec.ticker
+                    );
+                    console.log("[16] Token address from wallet:", tokenAddress);
+                    
+                    rec.contractAddress = tokenAddress;
+                    if (!tokenAddress) {
+                        const result = await tokenProvider.searchDexScreenerData(
+                            rec.ticker
+                        );
+                        console.log("[17] DexScreener search result:", result);
+                        
+                        const tokenAddress = result?.baseToken?.address;
+                        rec.contractAddress = tokenAddress;
+                        if (!tokenAddress) {
+                            console.warn("[18] Could not find contract address for token");
+                            continue;
+                        }
+                    }
+                }
+
+                const trustScoreDb = new TrustScoreDatabase(runtime.databaseAdapter.db);
+                const trustScoreManager = new TrustScoreManager(
+                    runtime,
+                    tokenProvider,
+                    trustScoreDb
+                );
+                console.log("[19] Trust score manager created");
+
+                const participants = await runtime.databaseAdapter.getParticipantsForRoom(
+                    message.roomId
+                );
+                console.log("[20] Room participants retrieved:", participants.length);
+
+                const user = participants.find(async (actor) => {
+                    const user = await runtime.databaseAdapter.getAccountById(actor);
+                    return (
+                        user.name.toLowerCase().trim() ===
+                        rec.recommender.toLowerCase().trim()
+                    );
+                });
+                console.log("[21] User found:", !!user);
+
+                if (!user) {
+                    console.warn("[22] Could not find user:", rec.recommender);
                     continue;
                 }
+
+                const account = await runtime.databaseAdapter.getAccountById(user);
+                const userId = account.id;
+                console.log("[23] Account retrieved:", { userId });
+
+                const recMemory = {
+                    userId,
+                    agentId,
+                    content: { text: JSON.stringify(rec) },
+                    roomId,
+                    createdAt: Date.now(),
+                };
+
+                await recommendationsManager.createMemory(recMemory, true);
+                console.log("[24] Recommendation memory created");
+
+                const buyAmounts = await tokenProvider.calculateBuyAmounts();
+                console.log("[25] Buy amounts calculated:", buyAmounts);
+
+                let buyAmount = buyAmounts[rec.conviction.toLowerCase().trim()];
+                if (!buyAmount) {
+                    buyAmount = 10;
+                    console.log("[26] Using default buy amount:", buyAmount);
+                }
+
+                const shouldTrade = await tokenProvider.shouldTradeToken();
+                console.log("[27] Should trade result:", shouldTrade);
+
+                if (!shouldTrade) {
+                    console.warn("[28] Token trading check failed");
+                    continue;
+                }
+
+                switch (rec.type) {
+                    case "buy":
+                        console.log("[29] Processing buy recommendation");
+                        await trustScoreManager.createTradePerformance(
+                            runtime,
+                            rec.contractAddress,
+                            userId,
+                            {
+                                buy_amount: rec.buyAmount,
+                                is_simulation: true,
+                            }
+                        );
+                        console.log("[30] Trade performance created");
+                        break;
+                    default:
+                        console.warn("[31] Unimplemented recommendation type:", rec.type);
+                }
+            } catch (recError) {
+                console.error("[ERROR] Processing recommendation failed:", recError);
             }
         }
 
-        // create the trust score manager
-
-        const trustScoreDb = new TrustScoreDatabase(runtime.databaseAdapter.db);
-        const trustScoreManager = new TrustScoreManager(
-            runtime,
-            tokenProvider,
-            trustScoreDb
-        );
-
-        // get actors from the database
-        const participants =
-            await runtime.databaseAdapter.getParticipantsForRoom(
-                message.roomId
-            );
-
-        // find the first user Id from a user with the username that we extracted
-        const user = participants.find(async (actor) => {
-            const user = await runtime.databaseAdapter.getAccountById(actor);
-            return (
-                user.name.toLowerCase().trim() ===
-                rec.recommender.toLowerCase().trim()
-            );
-        });
-
-        if (!user) {
-            console.warn("Could not find user: ", rec.recommender);
-            continue;
-        }
-
-        const account = await runtime.databaseAdapter.getAccountById(user);
-        const userId = account.id;
-
-        const recMemory = {
-            userId,
-            agentId,
-            content: { text: JSON.stringify(rec) },
-            roomId,
-            createdAt: Date.now(),
-        };
-
-        await recommendationsManager.createMemory(recMemory, true);
-
-        console.log("recommendationsManager", rec);
-
-        // - from here we just need to make sure code is right
-
-        // buy, dont buy, sell, dont sell
-
-        const buyAmounts = await tokenProvider.calculateBuyAmounts();
-
-        let buyAmount = buyAmounts[rec.conviction.toLowerCase().trim()];
-        if (!buyAmount) {
-            // handle annoying cases
-            // for now just put in 10 sol
-            buyAmount = 10;
-        }
-
-        // TODO: is this is a buy, sell, dont buy, or dont sell?
-        const shouldTrade = await tokenProvider.shouldTradeToken();
-
-        if (!shouldTrade) {
-            console.warn(
-                "There might be a problem with the token, not trading"
-            );
-            continue;
-        }
-
-        switch (rec.type) {
-            case "buy":
-                // for now, lets just assume buy only, but we should implement
-                await trustScoreManager.createTradePerformance(
-                    runtime,
-                    rec.contractAddress,
-                    userId,
-                    {
-                        buy_amount: rec.buyAmount,
-                        is_simulation: true,
-                    }
-                );
-                break;
-            case "sell":
-            case "dont_sell":
-            case "dont_buy":
-                console.warn("Not implemented");
-                break;
-        }
+        return filteredRecommendations;
+    } catch (error) {
+        console.error("[FATAL] Trust evaluation failed:", error);
+        throw error;
     }
-
-    return filteredRecommendations;
 }
 
 export const trustEvaluator: Evaluator = {
