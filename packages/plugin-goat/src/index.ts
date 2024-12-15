@@ -14,6 +14,8 @@ import {
 import { Connection, PublicKey } from "@solana/web3.js";
 import type { Chain, WalletClient, Signature, Balance } from "@goat-sdk/core";
 import { getTokenBalance } from "@ai16z/plugin-solana/src/providers/tokenUtils";
+import * as fs from 'fs';
+import * as path from 'path';
 
 // Validation schema for Twitter-related settings
 const TwitterConfigSchema = z.object({
@@ -119,8 +121,7 @@ interface SolanaPluginExtended extends Plugin {
 const REQUIRED_SETTINGS = {
     WALLET_PUBLIC_KEY: "Solana wallet public key",
     DEXSCREENER_WATCHLIST_ID: "DexScreener watchlist ID",
-    COINGECKO_API_KEY: "CoinGecko API key",
-    DEXSCREENER_WATCHLIST_URL: "DexScreener watchlist URL"
+    COINGECKO_API_KEY: "CoinGecko API key"
 } as const;
 
 // Add near the top imports
@@ -149,6 +150,20 @@ const validateSolanaAddress = (address: string | undefined): boolean => {
         return false;
     }
 };
+
+// Add function to load token addresses
+function loadTokenAddresses(): string[] {
+    try {
+        const filePath = path.resolve(process.cwd(), '../characters/tokens/tokenaddresses.json');
+        const data = fs.readFileSync(filePath, 'utf8');
+        const addresses = JSON.parse(data);
+        elizaLogger.log("Loaded token addresses:", addresses);
+        return addresses;
+    } catch (error) {
+        elizaLogger.error("Failed to load token addresses:", error);
+        throw new Error("Token addresses file not found or invalid");
+    }
+}
 
 async function createGoatPlugin(
     getSetting: (key: string) => string | undefined,
@@ -292,8 +307,7 @@ async function createGoatPlugin(
                 coingecko({ apiKey: getSetting("COINGECKO_API_KEY") })
             ],
             dexscreener: {
-                watchlistUrl: getSetting("DEXSCREENER_WATCHLIST_URL") || 
-                             `https://api.dexscreener.com/latest/dex/watchlists/${getSetting("DEXSCREENER_WATCHLIST_ID")}`,
+                watchlistUrl: `https://api.dexscreener.com/latest/dex/tokens/${loadTokenAddresses().join(',')}`,
                 chain: "solana",
                 updateInterval: parseInt(getSetting("UPDATE_INTERVAL") || "300")
             },
