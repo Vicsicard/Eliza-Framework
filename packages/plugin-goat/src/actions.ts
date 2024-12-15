@@ -19,7 +19,6 @@ import {
 } from "@ai16z/eliza";
 import { PublicKey } from "@solana/web3.js";
 import { AutoClient } from "@ai16z/client-auto";
-import type { Timeout } from "node:timers";
 
 const SAFETY_LIMITS = {
     MAX_POSITION_SIZE: 0.1,    // 10% of liquidity
@@ -186,8 +185,10 @@ const autonomousTradeAction: Action = {
                         throw new Error("DexScreener watchlist URL not configured");
                     }
 
-                    elizaLogger.log("Fetching DexScreener data from:", watchlistUrl);
-                    const data = await fetchDexScreenerData(watchlistUrl);
+                    // Use the tokens endpoint instead of watchlist
+                    const tokensUrl = `https://api.dexscreener.com/latest/dex/tokens/${loadTokenAddresses().join(',')}`;
+                    elizaLogger.log("Fetching DexScreener data from:", tokensUrl);
+                    const data = await fetchDexScreenerData(tokensUrl);
                     
                     // Process pairs
                     for (const pair of data.pairs) {
@@ -298,23 +299,28 @@ async function executeTrade(params: {
 // Add this helper function
 async function fetchDexScreenerData(url: string) {
     try {
-        const response = await fetch(url);
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0' // Some APIs require a user agent
+            }
+        });
         
         // Check if response is OK
         if (!response.ok) {
             throw new Error(`DexScreener API error: ${response.status} ${response.statusText}`);
         }
 
-        // Check content type
-        const contentType = response.headers.get("content-type");
-        if (!contentType?.includes("application/json")) {
-            throw new Error(`Invalid content type: ${contentType}`);
-        }
-
         const data = await response.json();
         if (!data || !data.pairs) {
             throw new Error("Invalid response format from DexScreener");
         }
+
+        elizaLogger.log("DexScreener data fetched successfully:", {
+            pairsCount: data.pairs.length,
+            schemaVersion: data.schemaVersion
+        });
 
         return data;
     } catch (error) {
