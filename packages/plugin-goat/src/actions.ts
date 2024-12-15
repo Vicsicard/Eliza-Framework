@@ -519,16 +519,34 @@ function getWalletKeypair(runtime: IAgentRuntime): Keypair {
     }
 }
 
-// Update evaluateTrust to use wallet keypair
+// Update evaluateTrust to include roomId
 async function evaluateTrust(runtime: IAgentRuntime, pair: any): Promise<number> {
     try {
         // Get wallet keypair first
         const walletKeypair = getWalletKeypair(runtime);
         const walletPubKey = walletKeypair.publicKey.toBase58();
 
-        // Create a new runtime with wallet settings and required methods
+        // Validate the public key is base58 encoded
+        if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(walletPubKey)) {
+            elizaLogger.error("Invalid wallet public key format:", walletPubKey);
+            return 0;
+        }
+
+        // Create a consistent roomId for autonomous trading
+        const roomId = `autonomous_trading_${runtime.agentId || 'default'}`;
+        const agentId = runtime.agentId || 'autonomous_agent';
+
+        elizaLogger.log("Creating runtime with:", { 
+            roomId, 
+            agentId,
+            walletPubKey: `${walletPubKey.slice(0, 4)}...${walletPubKey.slice(-4)}`  // Log safely
+        });
+
+        // Create a new runtime with complete configuration
         const runtimeWithWallet = {
             ...runtime,
+            agentId,
+            roomId,
             getSetting: (key: string) => {
                 if (key === 'SOLANA_PUBLIC_KEY') {
                     return walletPubKey;
@@ -537,74 +555,90 @@ async function evaluateTrust(runtime: IAgentRuntime, pair: any): Promise<number>
             },
             settings: {
                 ...runtime.settings,
-                SOLANA_PUBLIC_KEY: walletPubKey
+                SOLANA_PUBLIC_KEY: walletPubKey,
+                ROOM_ID: roomId,
+                AGENT_ID: agentId
             },
-            composeState: async () => ({
-                wallet: {
-                    address: walletPubKey,
-                    network: "solana",
-                    balance: runtime.settings?.WALLET_BALANCE || "0"
-                },
-                token: {
-                    address: pair.baseToken.address,
-                    symbol: pair.baseToken.symbol,
+            // Provide a complete state
+            composeState: async () => {
+                elizaLogger.log("Composing state with:", { roomId, agentId });
+                return {
+                    roomId,
+                    agentId,
+                    wallet: {
+                        address: walletPubKey,
+                        network: "solana",
+                        balance: runtime.settings?.WALLET_BALANCE || "0",
+                        publicKey: walletPubKey
+                    },
+                    token: {
+                        address: pair.baseToken.address,
+                        symbol: pair.baseToken.symbol,
+                        name: pair.baseToken.name || pair.baseToken.symbol,
+                        decimals: pair.baseToken.decimals || 9,
+                        metrics: {
+                            volume24h: pair.volume?.h24 || 0,
+                            liquidity: pair.liquidity?.usd || 0,
+                            priceChange24h: pair.priceChange24h || 0,
+                            holders: pair.holders || 0,
+                            marketCap: pair.marketCap || 0,
+                            fdv: pair.fdv || 0,
+                            price: Number(pair.priceUsd) || 0
+                        }
+                    },
+                    recentMessages: [], // Add empty array if needed
+                    participants: [{
+                        id: agentId,
+                        name: "Autonomous Trading Agent",
+                        role: "agent"
+                    }]
+                };
+            },
+            // Keep these to prevent unnecessary text generation
+            generateText: async () => "",
+            generateObject: async () => ({ object: {} })
+        };
+
+        // Create memory with complete configuration
+        const memory: Memory = {
+            content: {
+                text: "evaluate token trust",
+                action: "EVALUATE_TRUST",
+                content: {
+                    token: pair.baseToken.address,
+                    chain: "solana",
                     metrics: {
                         volume24h: pair.volume?.h24 || 0,
                         liquidity: pair.liquidity?.usd || 0,
                         priceChange24h: pair.priceChange24h || 0,
                         holders: pair.holders || 0,
                         marketCap: pair.marketCap || 0,
-                        fdv: pair.fdv || 0
+                        fdv: pair.fdv || 0,
+                        price: Number(pair.priceUsd) || 0
                     }
                 }
-            })
-        };
-
-        // Create trust evaluation params
-        const trustParams = {
-            token: {
-                address: pair.baseToken.address,
-                chain: "solana",
-                metrics: {
-                    volume24h: pair.volume?.h24 || 0,
-                    liquidity: pair.liquidity?.usd || 0,
-                    priceChange24h: pair.priceChange24h || 0,
-                    holders: pair.holders || 0,
-                    marketCap: pair.marketCap || 0,
-                    fdv: pair.fdv || 0
-                }
-            }
-        };
-
-        // Create memory with required roomId
-        const memory: Memory = {
-            content: {
-                text: "evaluate token trust",
-                action: "EVALUATE_TRUST",
-                content: trustParams
             },
-            userId: runtime.agentId,
-            roomId: `trust_evaluation_${pair.baseToken.address}`, // Unique roomId per token
-            agentId: runtime.agentId
+            userId: agentId,
+            roomId,
+            agentId,
+            createdAt: Date.now()
         };
 
-        elizaLogger.log("Trust evaluation:", {
-            walletKey: walletPubKey,
-            tokenAddress: pair.baseToken.address,
-            metrics: trustParams.token.metrics,
-            settings: runtimeWithWallet.settings,
-            roomId: memory.roomId
+        elizaLogger.log("Evaluating trust with:", { 
+            symbol: pair.baseToken.symbol,
+            roomId,
+            agentId 
         });
 
-        // Use trust evaluator with modified runtime
+        // Use trust evaluator with complete runtime and memory
         const result = await trustEvaluator.handler(
             runtimeWithWallet,
             memory,
-            undefined,
-            trustParams.token
+            await runtimeWithWallet.composeState(), // Pass initial state
+            memory.content.content
         );
 
-        if (typeof result === 'number') {
+        if (typeof result === 'number' && !isNaN(result)) {
             elizaLogger.log(`Trust score for ${pair.baseToken.symbol}: ${result}`);
             return result;
         }
@@ -612,16 +646,7 @@ async function evaluateTrust(runtime: IAgentRuntime, pair: any): Promise<number>
         elizaLogger.warn(`Invalid trust score for ${pair.baseToken.symbol}:`, result);
         return 0;
     } catch (error) {
-        elizaLogger.error(`Trust evaluation error for ${pair.baseToken.symbol}:`, {
-            error: error instanceof Error ? {
-                message: error.message,
-                stack: error.stack
-            } : error,
-            pair: {
-                address: pair.baseToken?.address,
-                symbol: pair.baseToken?.symbol
-            }
-        });
+        elizaLogger.error(`Trust evaluation error for ${pair.baseToken.symbol}:`, error);
         return 0;
     }
 }
