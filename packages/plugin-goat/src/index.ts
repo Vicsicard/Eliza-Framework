@@ -311,7 +311,6 @@ async function createGoatPlugin(
                 chain: "solana",
                 updateInterval: parseInt(getSetting("UPDATE_INTERVAL") || "300")
             },
-            tweetTrade
         });
 
         // Then update the plugin creation
