@@ -1,187 +1,85 @@
-# Autonomous Trading System Documentation
-Version 1.1
+# Autonomous Trading Plugin
 
-## Table of Contents
-1. [System Overview](#system-overview)
-2. [Plugin Architecture](#plugin-architecture)
-3. [Core Components](#core-components)
-4. [Configuration](#configuration)
-5. [Trading Logic](#trading-logic)
-6. [Monitoring and Alerts](#monitoring-and-alerts)
-7. [Safety Mechanisms](#safety-mechanisms)
+Autonomous trading plugin for Solana with built-in safety limits and risk management.
 
-## 1. System Overview
-The Autonomous Trading System is built on Eliza's plugin architecture, enabling automated token trading on the Solana blockchain. The system integrates:
-- GOAT SDK for core blockchain interactions
-- Solana Plugin for trading execution
-- DexScreener for market data
-- Twitter integration for trade alerts
-- CoinGecko for additional market data
+## Features
 
-## 2. Plugin Architecture
+- Automated trading based on market conditions
+- Built-in safety limits and position sizing
+- Stop loss protection
+- Trust score evaluation
+- Liquidity monitoring
 
-### Core Components
-- **WalletAdapter**
-  - Implements WalletClient interface
-  - Handles balance type conversions
-  - Manages chain interactions
-  - Provides portfolio tracking
+## Safety Limits
 
-- **Plugin-Solana**
-  - Wallet management
-  - Trade execution
-  - Token validation
+The plugin enforces several safety limits to protect trades:
 
-- **Client-Twitter**
-  - Trade notifications
-  - Automated alerts
-
-## 3. Core Components
-
-### WalletAdapter Implementation
-```typescript
-class WalletAdapter implements WalletClient {
-    private provider: WalletProvider;
-
-    async balanceOf(tokenAddress: string): Promise<Balance> {
-        const rawBalance = await this.provider.balanceOf(tokenAddress);
-        const isSol = this.provider.getChain() === "solana";
-        return {
-            value: BigInt(Math.floor(rawBalance * Math.pow(10, isSol ? 9 : 6))),
-            decimals: isSol ? 9 : 6
-        };
-    }
-
-    getChain(): Chain {
-        return "solana" as Chain;
-    }
-
-    // Additional trade execution methods...
-}
-```
-
-### Dependencies
-```json
-{
-    "@ai16z/eliza": "workspace:*",
-    "@goat-sdk/core": "0.3.8",
-    "@goat-sdk/plugin-coingecko": "^0.1.0",
-    "@goat-sdk/plugin-erc20": "0.1.7",
-    "@ai16z/client-twitter": "workspace:*",
-    "@ai16z/plugin-solana": "workspace:*"
-}
-```
-
-## 4. Configuration
-
-### Environment Variables
-```env
-# Solana Configuration
-RPC_URL=your_rpc_url
-WALLET_PUBLIC_KEY=your_solana_public_key
-
-# DexScreener
-DEXSCREENER_WATCHLIST_ID=your_watchlist_id
-DEXSCREENER_API_KEY=your_api_key
-UPDATE_INTERVAL=300
-
-# Twitter Integration
-TWITTER_ENABLED=true
-TWITTER_USERNAME=your_username
-TWITTER_DRY_RUN=false
-
-# Optional
-COINGECKO_API_KEY=your_api_key
-```
-
-## 5. Trading Logic
-
-### Safety Limits
 ```typescript
 const SAFETY_LIMITS = {
-    MAX_POSITION_SIZE: 0.1,    // 10% of liquidity
-    MAX_SLIPPAGE: 0.05,        // 5% slippage
-    MIN_LIQUIDITY: 1000,       // $1000 minimum liquidity
-    MAX_PRICE_IMPACT: 0.03,    // 3% price impact
-    STOP_LOSS: 0.15,           // 15% stop loss
-    MIN_TRUST_SCORE: 0.4,      // Minimum trust score
-    DETERIORATION_THRESHOLD: 0.2,  // 20% deterioration triggers sell
-    MIN_VOLUME_RATIO: 0.5,     // Minimum volume ratio
-    MAX_RISK_INCREASE: 0.3     // Maximum risk increase
+    MINIMUM_TRADE: 0.01,        // Minimum trade size in SOL
+    MAX_POSITION_SIZE: 0.1,     // Maximum 10% of token liquidity
+    MAX_SLIPPAGE: 0.05,        // Maximum 5% slippage allowed
+    MIN_LIQUIDITY: 5000,       // Minimum $5000 liquidity required
+    MIN_VOLUME: 10000,         // Minimum $10000 24h volume required
+    MIN_TRUST_SCORE: 0.4,      // Minimum trust score to trade
+    MAX_PRICE_IMPACT: 0.03,    // Maximum 3% price impact allowed
+    STOP_LOSS: 0.15,          // 15% stop loss trigger
+    CHECK_INTERVAL: 5 * 60 * 1000  // Check every 5 minutes
 }
 ```
 
-### Trade Conditions
+## Position Sizing
 
-#### Buy Conditions
-- Token in DexScreener watchlist
-- Sufficient liquidity (>$1000)
-- Trust score above minimum (>0.4)
-- Not currently in position
-- Safe position size available
+Trades are limited by two factors:
+1. Maximum 10% of token's available liquidity
+2. Maximum 10% of wallet's SOL balance
 
-#### Sell Conditions
-- Stop Loss Hit (15% drop)
-- Metric Deterioration:
-  - Price drop >20%
-  - Volume drop >20%
-  - Liquidity drop >20%
-- Risk Increase:
-  - Trust score deterioration >30%
+The smaller of these two limits is used as the maximum position size.
 
-## 6. Monitoring and Alerts
+## Trust Score Evaluation
 
-### Position Tracking
-```typescript
-interface Position {
-    token: string;
-    entryPrice: number;
-    amount: number;
-    timestamp: number;
-    sold?: boolean;
-    initialMetrics: {
-        trustScore: number;
-        volume24h: number;
-        liquidity: { usd: number };
-        riskLevel: "LOW" | "MEDIUM" | "HIGH";
-    };
-}
+Each trade opportunity is evaluated based on:
+- Liquidity (40% weight)
+- 24h Volume (40% weight)
+- Market Cap (20% weight)
+
+## Installation
+
+```bash
+pnpm add @goat-sdk/plugin-goat
 ```
 
-### Twitter Alerts
+## Configuration
+
+Required environment variables:
 ```
-🤖 Trade Alert | <time>
-<token> | $<amount>
-Trust: <score>%
-Risk: <level>
-
-📊 Market Data:
-24h Change: <+/-percentage>%
-Volume: $<amount>M
-Liquidity: $<amount>M
-
-#SolanaDefi #Trading <token>
+WALLET_PUBLIC_KEY=your_solana_public_key
+WALLET_PRIVATE_KEY=your_solana_private_key
+RPC_URL=your_rpc_url
 ```
 
-## 7. Safety Mechanisms
+## Safety Features
 
-### Position Management
-- Maximum 10% of token liquidity
-- Minimum liquidity requirements
-- Risk-adjusted position sizing
-- Continuous metric monitoring
-- Automatic loss prevention
-
-### Error Handling
-- Transaction retry logic
+- Minimum trade size enforcement
+- Maximum position size limits
 - Slippage protection
-- Failed trade recovery
-- Portfolio balance validation
-- Chain interaction verification
-
-### Risk Management
+- Stop loss monitoring
+- Liquidity requirements
+- Volume requirements
 - Trust score evaluation
-- Continuous position monitoring
-- Automatic stop loss
-- Market deterioration checks
-- Portfolio diversification limits
+
+## Error Handling
+
+- Graceful failure for low funds
+- Transaction validation
+- Quote verification
+- Detailed error logging
+
+## Monitoring
+
+The plugin logs detailed information about:
+- Trade execution
+- Position management
+- Trust evaluation
+- Balance checks
+- Error conditions
