@@ -17,11 +17,9 @@ import {
     generateObjectV2,
     elizaLogger,
 } from "@ai16z/eliza";
-import { PublicKey, Keypair } from "@solana/web3.js";
+import { PublicKey, Keypair, Connection, VersionedTransaction } from "@solana/web3.js";
 import { AutoClient } from "@ai16z/client-auto";
 import { loadTokenAddresses } from "./tokenUtils";
-import { trustEvaluator, type TrustEvaluatorParams } from "@ai16z/plugin-solana";
-import bs58 from "bs58";
 
 const SAFETY_LIMITS = {
     // Position sizing
@@ -232,6 +230,76 @@ async function sellPosition(position: Position, currentPrice: number, runtime: I
     }
 }
 
+// Add trust evaluation function
+async function evaluateTrust(runtime: IAgentRuntime, pair: any): Promise<number> {
+    try {
+        // Prevent Twitter loop during trust evaluation
+        const modifiedRuntime = {
+            ...runtime,
+            composeState: async () => ({
+                wallet: {
+                    address: runtime.getSetting("SOLANA_PUBLIC_KEY"),
+                    network: "solana"
+                },
+                token: {
+                    address: pair.baseToken.address,
+                    metrics: {
+                        volume24h: pair.volume?.h24 || 0,
+                        liquidity: pair.liquidity?.usd || 0,
+                        marketCap: pair.marketCap || 0
+                    }
+                }
+            }),
+            // Disable tweet generation
+            generateText: async () => "",
+            generateObject: async () => ({ object: {} })
+        };
+
+        // Calculate trust score
+        const metrics = {
+            liquidity: pair.liquidity?.usd || 0,
+            volume24h: pair.volume?.h24 || 0,
+            marketCap: pair.marketCap || 0
+        };
+
+        const liquidityScore = Math.min(metrics.liquidity / SAFETY_LIMITS.MIN_LIQUIDITY, 1) * 0.4;
+        const volumeScore = Math.min(metrics.volume24h / SAFETY_LIMITS.MIN_VOLUME, 1) * 0.4;
+        const marketCapScore = Math.min(metrics.marketCap / 1000000, 1) * 0.2;
+
+        return Math.min(liquidityScore + volumeScore + marketCapScore, 1);
+    } catch (error) {
+        elizaLogger.error(`Trust evaluation error for ${pair.baseToken.symbol}:`, error);
+        return 0;
+    }
+}
+
+// Add function to get SOL balance
+async function getWalletBalance(runtime: IAgentRuntime): Promise<number> {
+    try {
+        const walletKeypair = getWalletKeypair(runtime);
+        const walletPubKey = walletKeypair.publicKey;
+
+        // Fetch balance from RPC
+        const connection = new Connection(
+            runtime.getSetting("RPC_URL") || "https://api.mainnet-beta.solana.com"
+        );
+        
+        const balance = await connection.getBalance(walletPubKey);
+        const solBalance = balance / 1e9; // Convert lamports to SOL
+
+        elizaLogger.log("Fetched wallet balance:", {
+            address: walletPubKey.toBase58(),
+            lamports: balance,
+            sol: solBalance
+        });
+
+        return solBalance;
+    } catch (error) {
+        elizaLogger.error("Failed to get wallet balance:", error);
+        return 0;
+    }
+}
+
 // Update autonomous trade action to use trust evaluator
 const autonomousTradeAction: Action = {
     name: "AUTONOMOUS_TRADE",
@@ -312,10 +380,23 @@ const autonomousTradeAction: Action = {
                                 continue;
                             }
 
-                            // Get wallet balance safely
-                            const balance = Number(runtime.getSetting("WALLET_BALANCE") || "0");
+                            // Get wallet keypair first
+                            const walletKeypair = getWalletKeypair(runtime);
+
+                            // Get wallet balance
+                            const balance = await getWalletBalance(runtime);
+                            elizaLogger.log("Checking wallet balance:", {
+                                solBalance: balance,
+                                walletAddress: walletKeypair.publicKey.toBase58(),
+                                rpcUrl: runtime.getSetting("RPC_URL") || "https://api.mainnet-beta.solana.com"
+                            });
+
                             if (balance <= 0) {
-                                elizaLogger.warn("Insufficient wallet balance");
+                                elizaLogger.warn("Insufficient wallet balance:", {
+                                    balance,
+                                    minRequired: SAFETY_LIMITS.MIN_LIQUIDITY * SAFETY_LIMITS.MAX_POSITION_SIZE,
+                                    walletAddress: walletKeypair.publicKey.toBase58()
+                                });
                                 continue;
                             }
 
@@ -325,7 +406,7 @@ const autonomousTradeAction: Action = {
                             );
 
                             if (positionSize > 0) {
-                                const tradeResult = await executeTrade({
+                                const tradeResult = await executeTrade(runtime, {
                                     tokenAddress: pair.baseToken.address,
                                     amount: positionSize,
                                     slippage: 0.01
@@ -424,7 +505,7 @@ const autonomousTradeAction: Action = {
         } catch (error) {
             elizaLogger.error("Autonomous trade error:", error);
             callback?.({
-                text: `⚠️ Trading error: ${error.message}`,
+                text: 'Trading error: ${error.message}',
                 content: { error: error.message }
             });
             return false;
@@ -439,14 +520,84 @@ const autonomousTradeAction: Action = {
 };
 
 // Helper function to execute trades
-async function executeTrade(params: {
-    tokenAddress: string;
-    amount: number;
-    slippage: number;
-}) {
-    // Implement actual trade execution logic here
-    return { success: true };
+async function executeTrade(
+    runtime: IAgentRuntime,
+    params: {
+        tokenAddress: string;
+        amount: number;
+        slippage: number;
+    }
+): Promise<any> {
+    try {
+        elizaLogger.log("Executing trade with params:", params);
+
+        const walletKeypair = getWalletKeypair(runtime);
+        const connection = new Connection(
+            runtime.getSetting("RPC_URL") || "https://api.mainnet-beta.solana.com"
+        );
+
+        // Setup swap parameters
+        const inputTokenCA = "So11111111111111111111111111111111111111112"; // SOL
+        const outputTokenCA = params.tokenAddress;
+        const adjustedAmount = params.amount * 1e9; // Convert to lamports
+
+        elizaLogger.log("Fetching quote with params:", {
+            inputMint: inputTokenCA,
+            outputMint: outputTokenCA,
+            amount: adjustedAmount
+        });
+
+        // Get quote
+        const quoteResponse = await fetch(
+            `https://quote-api.jup.ag/v6/quote?inputMint=${inputTokenCA}&outputMint=${outputTokenCA}&amount=${adjustedAmount}&slippageBps=${params.slippage * 10000}`
+        );
+        const quoteData = await quoteResponse.json();
+
+        if (!quoteData || quoteData.error) {
+            throw new Error(`Quote error: ${quoteData?.error || "Unknown error"}`);
+        }
+
+        elizaLogger.log("Quote received:", quoteData);
+
+        // Get swap transaction
+        const swapResponse = await fetch("https://quote-api.jup.ag/v6/swap", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                quoteResponse: quoteData,
+                userPublicKey: walletKeypair.publicKey.toString(),
+                wrapAndUnwrapSol: true,
+                computeUnitPriceMicroLamports: 2000000,
+                dynamicComputeUnitLimit: true
+            })
+        });
+
+        const swapData = await swapResponse.json();
+        if (!swapData?.swapTransaction) {
+            throw new Error("No swap transaction returned");
+        }
+
+        elizaLogger.log("Swap transaction received");
+
+        // Deserialize and execute transaction
+        const transactionBuf = Buffer.from(swapData.swapTransaction, 'base64');
+        const tx = VersionedTransaction.deserialize(transactionBuf);
+        tx.sign([walletKeypair]);
+
+        const signature = await connection.sendTransaction(tx);
+        const confirmation = await connection.confirmTransaction(signature);
+
+        return { success: true, signature, confirmation };
+    } catch (error) {
+        elizaLogger.error("Trade execution failed:", {
+            error: error instanceof Error ? error.message : error,
+            stack: error instanceof Error ? error.stack : undefined,
+            params
+        });
+        return { success: false, error: String(error) };
+    }
 }
+
 
 // Add this helper function
 async function fetchDexScreenerData(url: string) {
@@ -482,172 +633,45 @@ async function fetchDexScreenerData(url: string) {
     }
 }
 
-// Add helper to get wallet keypair
+// Add helper to decode base58 private key
+function decodeBase58(str: string): Uint8Array {
+    const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    const ALPHABET_MAP = new Map(ALPHABET.split('').map((c, i) => [c, BigInt(i)]));
+    
+    let result = BigInt(0);
+    for (const char of str) {
+        const value = ALPHABET_MAP.get(char);
+        if (value === undefined) throw new Error('Invalid base58 character');
+        result = result * BigInt(58) + value;
+    }
+    
+    const bytes = [];
+    while (result > 0n) {
+        bytes.unshift(Number(result & 0xffn));
+        result = result >> 8n;
+    }
+    
+    // Add leading zeros
+    for (let i = 0; i < str.length && str[i] === '1'; i++) {
+        bytes.unshift(0);
+    }
+    
+    return new Uint8Array(bytes);
+}
+
+// Update getWalletKeypair to use the new decoder
 function getWalletKeypair(runtime: IAgentRuntime): Keypair {
     const privateKeyString = runtime.getSetting("WALLET_PRIVATE_KEY");
     if (!privateKeyString) {
         throw new Error("No wallet private key configured");
     }
 
-    elizaLogger.log("Attempting to decode private key:", {
-        length: privateKeyString.length,
-        sample: `${privateKeyString.slice(0, 4)}...${privateKeyString.slice(-4)}`
-    });
-
     try {
-        // Decode base58 private key
-        const privateKeyBytes = bs58.decode(privateKeyString);
-        elizaLogger.log("Decoded private key bytes:", {
-            length: privateKeyBytes.length,
-            isUint8Array: privateKeyBytes instanceof Uint8Array
-        });
-
-        const keypair = Keypair.fromSecretKey(privateKeyBytes);
-        elizaLogger.log("Created keypair:", {
-            publicKey: keypair.publicKey.toBase58(),
-            publicKeyLength: keypair.publicKey.toBytes().length
-        });
-
-        return keypair;
+        const privateKeyBytes = decodeBase58(privateKeyString);
+        return Keypair.fromSecretKey(privateKeyBytes);
     } catch (error) {
-        elizaLogger.error("Failed to create wallet keypair:", {
-            error: error instanceof Error ? error.message : error,
-            privateKeyLength: privateKeyString.length,
-            isBase58: /^[1-9A-HJ-NP-Za-km-z]+$/.test(privateKeyString)
-        });
+        elizaLogger.error("Failed to create wallet keypair:", error);
         throw error;
-    }
-}
-
-// Update evaluateTrust to include roomId
-async function evaluateTrust(runtime: IAgentRuntime, pair: any): Promise<number> {
-    try {
-        // Get wallet keypair first
-        const walletKeypair = getWalletKeypair(runtime);
-        const walletPubKey = walletKeypair.publicKey.toBase58();
-
-        // Validate the public key is base58 encoded
-        if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(walletPubKey)) {
-            elizaLogger.error("Invalid wallet public key format:", walletPubKey);
-            return 0;
-        }
-
-        // Create a consistent roomId for autonomous trading
-        const roomId = `autonomous_trading_${runtime.agentId || 'default'}`;
-        const agentId = runtime.agentId || 'autonomous_agent';
-
-        elizaLogger.log("Creating runtime with:", { 
-            roomId, 
-            agentId,
-            walletPubKey: `${walletPubKey.slice(0, 4)}...${walletPubKey.slice(-4)}`  // Log safely
-        });
-
-        // Create a new runtime with complete configuration
-        const runtimeWithWallet = {
-            ...runtime,
-            agentId,
-            roomId,
-            getSetting: (key: string) => {
-                if (key === 'SOLANA_PUBLIC_KEY') {
-                    return walletPubKey;
-                }
-                return runtime.settings?.[key];
-            },
-            settings: {
-                ...runtime.settings,
-                SOLANA_PUBLIC_KEY: walletPubKey,
-                ROOM_ID: roomId,
-                AGENT_ID: agentId
-            },
-            // Provide a complete state
-            composeState: async () => {
-                elizaLogger.log("Composing state with:", { roomId, agentId });
-                return {
-                    roomId,
-                    agentId,
-                    wallet: {
-                        address: walletPubKey,
-                        network: "solana",
-                        balance: runtime.settings?.WALLET_BALANCE || "0",
-                        publicKey: walletPubKey
-                    },
-                    token: {
-                        address: pair.baseToken.address,
-                        symbol: pair.baseToken.symbol,
-                        name: pair.baseToken.name || pair.baseToken.symbol,
-                        decimals: pair.baseToken.decimals || 9,
-                        metrics: {
-                            volume24h: pair.volume?.h24 || 0,
-                            liquidity: pair.liquidity?.usd || 0,
-                            priceChange24h: pair.priceChange24h || 0,
-                            holders: pair.holders || 0,
-                            marketCap: pair.marketCap || 0,
-                            fdv: pair.fdv || 0,
-                            price: Number(pair.priceUsd) || 0
-                        }
-                    },
-                    recentMessages: [], // Add empty array if needed
-                    participants: [{
-                        id: agentId,
-                        name: "Autonomous Trading Agent",
-                        role: "agent"
-                    }]
-                };
-            },
-            // Keep these to prevent unnecessary text generation
-            generateText: async () => "",
-            generateObject: async () => ({ object: {} })
-        };
-
-        // Create memory with complete configuration
-        const memory: Memory = {
-            content: {
-                text: "evaluate token trust",
-                action: "EVALUATE_TRUST",
-                content: {
-                    token: pair.baseToken.address,
-                    chain: "solana",
-                    metrics: {
-                        volume24h: pair.volume?.h24 || 0,
-                        liquidity: pair.liquidity?.usd || 0,
-                        priceChange24h: pair.priceChange24h || 0,
-                        holders: pair.holders || 0,
-                        marketCap: pair.marketCap || 0,
-                        fdv: pair.fdv || 0,
-                        price: Number(pair.priceUsd) || 0
-                    }
-                }
-            },
-            userId: agentId,
-            roomId,
-            agentId,
-            createdAt: Date.now()
-        };
-
-        elizaLogger.log("Evaluating trust with:", { 
-            symbol: pair.baseToken.symbol,
-            roomId,
-            agentId 
-        });
-
-        // Use trust evaluator with complete runtime and memory
-        const result = await trustEvaluator.handler(
-            runtimeWithWallet,
-            memory,
-            await runtimeWithWallet.composeState(), // Pass initial state
-            memory.content.content
-        );
-
-        if (typeof result === 'number' && !isNaN(result)) {
-            elizaLogger.log(`Trust score for ${pair.baseToken.symbol}: ${result}`);
-            return result;
-        }
-
-        elizaLogger.warn(`Invalid trust score for ${pair.baseToken.symbol}:`, result);
-        return 0;
-    } catch (error) {
-        elizaLogger.error(`Trust evaluation error for ${pair.baseToken.symbol}:`, error);
-        return 0;
     }
 }
 
