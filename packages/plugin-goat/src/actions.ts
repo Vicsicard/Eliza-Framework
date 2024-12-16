@@ -1,3 +1,10 @@
+/**
+ * GOAT Plugin - Autonomous Trading Actions
+ * 
+ * This module implements autonomous trading functionality for the GOAT plugin.
+ * It handles trade execution, position management, and risk evaluation.
+ */
+
 import {
     type WalletClient,
     type Plugin,
@@ -21,43 +28,37 @@ import { PublicKey, Keypair, Connection, VersionedTransaction } from "@solana/we
 import { AutoClient } from "@ai16z/client-auto";
 import { loadTokenAddresses } from "./tokenUtils";
 
+/**
+ * Safety limits and trading parameters
+ */
 const SAFETY_LIMITS = {
-    // Position sizing
-    MAX_POSITION_SIZE: 0.1,    // 10% of liquidity
-    MAX_SLIPPAGE: 0.05,        // 5% slippage
-    
-    // Minimum requirements
-    MIN_LIQUIDITY: 5000,       // $5000 minimum liquidity
-    MIN_VOLUME: 10000,         // $10000 minimum 24h volume
+    MINIMUM_TRADE: 0.01,        // Minimum trade size in SOL
+    MAX_POSITION_SIZE: 0.1,     // Maximum 10% of token liquidity
+    MAX_SLIPPAGE: 0.05,        // Maximum 5% slippage allowed
+    MIN_LIQUIDITY: 5000,       // Minimum $5000 liquidity required
+    MIN_VOLUME: 10000,         // Minimum $10000 24h volume required
     MIN_TRUST_SCORE: 0.4,      // Minimum trust score to trade
-    
-    // Risk management
-    MAX_PRICE_IMPACT: 0.03,    // 3% price impact
-    STOP_LOSS: 0.15,          // 15% stop loss
-    
-    // Position monitoring
-    DETERIORATION_THRESHOLD: 0.2,  // 20% deterioration triggers sell
-    MIN_VOLUME_RATIO: 0.5,         // Volume must stay above 50% of entry
-    MAX_RISK_INCREASE: 0.3,        // 30% max risk increase before selling
-    
-    // Trading intervals
-    CHECK_INTERVAL: 5 * 60 * 1000  // 5 minutes
+    MAX_PRICE_IMPACT: 0.03,    // Maximum 3% price impact allowed
+    STOP_LOSS: 0.15,          // 15% stop loss trigger
+    CHECK_INTERVAL: 5 * 60 * 1000  // Check every 5 minutes
 };
 
+/**
+ * Position tracking interface
+ * Represents an open trading position
+ */
 interface Position {
-    token: string;
-    entryPrice: number;
-    amount: number;
-    initialAmount?: number;  // For tracking position growth
-    timestamp: number;
-    sold?: boolean;
-    exitPrice?: number;  // Add this
-    exitTimestamp?: number;  // Add this
-    averagePrice?: number;  // Add this
+    token: string;              // Token symbol
+    entryPrice: number;         // Entry price in USD
+    amount: number;             // Position size
+    timestamp: number;          // Entry timestamp
+    sold?: boolean;             // Position closed flag
+    exitPrice?: number;         // Exit price if sold
+    exitTimestamp?: number;     // Exit timestamp if sold
     initialMetrics: {
-        trustScore: number;
-        volume24h: number;
-        liquidity: { usd: number };
+        trustScore: number;     // Initial trust score
+        volume24h: number;      // 24h volume at entry
+        liquidity: { usd: number }; // Liquidity at entry
         riskLevel: "LOW" | "MEDIUM" | "HIGH";
     };
 }
@@ -70,7 +71,6 @@ type GetOnChainActionsParams<TWalletClient extends WalletClient> = {
         chain: string;
         updateInterval: number;
     };
-    tweetTrade: (params: any) => Promise<void>;
 };
 
 function createAction(tool: Tool): Action {
@@ -205,25 +205,23 @@ const sellTokenAction: Action = {
 // Add helper function for selling
 async function sellPosition(position: Position, currentPrice: number, runtime: IAgentRuntime): Promise<boolean> {
     try {
-        // Execute sell using sell action
-        const sellResult = await sellTokenAction.handler(
-            runtime,
-            { content: { source: "auto" } } as Memory,
-            undefined,
-            { tokenAddress: position.token },
-            (response) => elizaLogger.log("Sell response:", response)
-        );
+        // Execute sell using executeTrade
+        const tradeResult = await executeTrade(runtime, {
+            tokenAddress: "So11111111111111111111111111111111111111112", // SOL address
+            amount: position.amount,
+            slippage: 0.01
+        });
 
-        if (sellResult) {
+        if (tradeResult.success) {
             position.sold = true;
             position.exitPrice = currentPrice;
             position.exitTimestamp = Date.now();
             
             const pnl = ((currentPrice - position.entryPrice) / position.entryPrice) * 100;
-            elizaLogger.log(`Position closed: ${position.token}, PnL: ${pnl.toFixed(2)}%`);
+            elizaLogger.log(`Position closed and swapped to SOL: ${position.token}, PnL: ${pnl.toFixed(2)}%`);
         }
 
-        return sellResult;
+        return tradeResult.success;
     } catch (error) {
         elizaLogger.error(`Failed to sell position ${position.token}:`, error);
         return false;
@@ -233,74 +231,42 @@ async function sellPosition(position: Position, currentPrice: number, runtime: I
 // Add trust evaluation function
 async function evaluateTrust(runtime: IAgentRuntime, pair: any): Promise<number> {
     try {
-        // Prevent Twitter loop during trust evaluation
-        const modifiedRuntime = {
-            ...runtime,
-            composeState: async () => ({
-                wallet: {
-                    address: runtime.getSetting("SOLANA_PUBLIC_KEY"),
-                    network: "solana"
-                },
-                token: {
-                    address: pair.baseToken.address,
-                    metrics: {
-                        volume24h: pair.volume?.h24 || 0,
-                        liquidity: pair.liquidity?.usd || 0,
-                        marketCap: pair.marketCap || 0
-                    }
-                }
-            }),
-            // Disable tweet generation
-            generateText: async () => "",
-            generateObject: async () => ({ object: {} })
-        };
-
-        // Calculate trust score
+        // Calculate trust score from metrics
         const metrics = {
             liquidity: pair.liquidity?.usd || 0,
             volume24h: pair.volume?.h24 || 0,
             marketCap: pair.marketCap || 0
         };
 
+        // Calculate component scores
         const liquidityScore = Math.min(metrics.liquidity / SAFETY_LIMITS.MIN_LIQUIDITY, 1) * 0.4;
         const volumeScore = Math.min(metrics.volume24h / SAFETY_LIMITS.MIN_VOLUME, 1) * 0.4;
         const marketCapScore = Math.min(metrics.marketCap / 1000000, 1) * 0.2;
 
-        return Math.min(liquidityScore + volumeScore + marketCapScore, 1);
+        // Calculate final score
+        const trustScore = Math.min(liquidityScore + volumeScore + marketCapScore, 1);
+
+        elizaLogger.log("Trust evaluation:", {
+            token: pair.baseToken.symbol,
+            metrics,
+            scores: {
+                liquidity: liquidityScore,
+                volume: volumeScore,
+                marketCap: marketCapScore,
+                total: trustScore
+            }
+        });
+
+        return trustScore;
     } catch (error) {
         elizaLogger.error(`Trust evaluation error for ${pair.baseToken.symbol}:`, error);
         return 0;
     }
 }
-
-// Add function to get SOL balance
-async function getWalletBalance(runtime: IAgentRuntime): Promise<number> {
-    try {
-        const walletKeypair = getWalletKeypair(runtime);
-        const walletPubKey = walletKeypair.publicKey;
-
-        // Fetch balance from RPC
-        const connection = new Connection(
-            runtime.getSetting("RPC_URL") || "https://api.mainnet-beta.solana.com"
-        );
-        
-        const balance = await connection.getBalance(walletPubKey);
-        const solBalance = balance / 1e9; // Convert lamports to SOL
-
-        elizaLogger.log("Fetched wallet balance:", {
-            address: walletPubKey.toBase58(),
-            lamports: balance,
-            sol: solBalance
-        });
-
-        return solBalance;
-    } catch (error) {
-        elizaLogger.error("Failed to get wallet balance:", error);
-        return 0;
-    }
-}
-
-// Update autonomous trade action to use trust evaluator
+/**
+ * Autonomous trading action
+ * Monitors market conditions and executes trades automatically
+ */
 const autonomousTradeAction: Action = {
     name: "AUTONOMOUS_TRADE",
     description: "Execute autonomous trades based on market conditions",
@@ -401,15 +367,15 @@ const autonomousTradeAction: Action = {
                             }
 
                             const positionSize = Math.min(
-                                pair.liquidity.usd * SAFETY_LIMITS.MAX_POSITION_SIZE,
-                                balance * 0.9
+                                pair.liquidity.usd * SAFETY_LIMITS.MAX_POSITION_SIZE, // Only 10% of liquidity
+                                balance * 0.1  // Only 10% of wallet balance
                             );
 
                             if (positionSize > 0) {
                                 const tradeResult = await executeTrade(runtime, {
                                     tokenAddress: pair.baseToken.address,
                                     amount: positionSize,
-                                    slippage: 0.01
+                                    slippage: SAFETY_LIMITS.MAX_SLIPPAGE
                                 });
 
                                 if (tradeResult.success) {
@@ -519,17 +485,38 @@ const autonomousTradeAction: Action = {
     }
 };
 
-// Helper function to execute trades
+/**
+ * Executes a trade with the given parameters
+ * @param runtime Agent runtime environment
+ * @param params Trade parameters (token, amount, slippage)
+ * @returns Trade result with success/failure and details
+ */
 async function executeTrade(
     runtime: IAgentRuntime,
     params: {
-        tokenAddress: string;
-        amount: number;
-        slippage: number;
+        tokenAddress: string;   // Token to trade
+        amount: number;         // Amount in SOL
+        slippage: number;       // Slippage tolerance
     }
 ): Promise<any> {
     try {
         elizaLogger.log("Executing trade with params:", params);
+
+        // Validate minimum amount
+        if (params.amount < SAFETY_LIMITS.MINIMUM_TRADE) {
+            elizaLogger.warn("Trade amount too small:", {
+                amount: params.amount,
+                minimumRequired: SAFETY_LIMITS.MINIMUM_TRADE
+            });
+            return {
+                success: false,
+                error: "Trade amount too small",
+                details: {
+                    amount: params.amount,
+                    minimumRequired: SAFETY_LIMITS.MINIMUM_TRADE
+                }
+            };
+        }
 
         const walletKeypair = getWalletKeypair(runtime);
         const connection = new Connection(
@@ -539,7 +526,7 @@ async function executeTrade(
         // Setup swap parameters
         const inputTokenCA = "So11111111111111111111111111111111111111112"; // SOL
         const outputTokenCA = params.tokenAddress;
-        const adjustedAmount = params.amount * 1e9; // Convert to lamports
+        const adjustedAmount = Math.floor(params.amount * 1e9); // Convert to lamports and ensure integer
 
         elizaLogger.log("Fetching quote with params:", {
             inputMint: inputTokenCA,
@@ -549,12 +536,30 @@ async function executeTrade(
 
         // Get quote
         const quoteResponse = await fetch(
-            `https://quote-api.jup.ag/v6/quote?inputMint=${inputTokenCA}&outputMint=${outputTokenCA}&amount=${adjustedAmount}&slippageBps=${params.slippage * 10000}`
+            `https://quote-api.jup.ag/v6/quote?inputMint=${inputTokenCA}&outputMint=${outputTokenCA}&amount=${adjustedAmount}&slippageBps=${Math.floor(params.slippage * 10000)}`
         );
-        const quoteData = await quoteResponse.json();
 
+        if (!quoteResponse.ok) {
+            const error = await quoteResponse.text();
+            elizaLogger.warn("Quote request failed:", {
+                status: quoteResponse.status,
+                error
+            });
+            return {
+                success: false,
+                error: "Failed to get quote",
+                details: { status: quoteResponse.status, error }
+            };
+        }
+
+        const quoteData = await quoteResponse.json();
         if (!quoteData || quoteData.error) {
-            throw new Error(`Quote error: ${quoteData?.error || "Unknown error"}`);
+            elizaLogger.warn("Invalid quote data:", quoteData);
+            return {
+                success: false,
+                error: "Invalid quote data",
+                details: quoteData
+            };
         }
 
         elizaLogger.log("Quote received:", quoteData);
@@ -594,12 +599,20 @@ async function executeTrade(
             stack: error instanceof Error ? error.stack : undefined,
             params
         });
-        return { success: false, error: String(error) };
+        return {
+            success: false,
+            error: String(error),
+            recoverable: true // Indicate if error is temporary
+        };
     }
 }
 
-
-// Add this helper function
+/**
+ * Helper function to fetch and validate DexScreener data
+ * @param url DexScreener API endpoint URL
+ * @returns Parsed DexScreener response data
+ * @throws Error if fetch fails or response is invalid
+ */
 async function fetchDexScreenerData(url: string) {
     try {
         const response = await fetch(url, {
@@ -633,33 +646,12 @@ async function fetchDexScreenerData(url: string) {
     }
 }
 
-// Add helper to decode base58 private key
-function decodeBase58(str: string): Uint8Array {
-    const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-    const ALPHABET_MAP = new Map(ALPHABET.split('').map((c, i) => [c, BigInt(i)]));
-    
-    let result = BigInt(0);
-    for (const char of str) {
-        const value = ALPHABET_MAP.get(char);
-        if (value === undefined) throw new Error('Invalid base58 character');
-        result = result * BigInt(58) + value;
-    }
-    
-    const bytes = [];
-    while (result > 0n) {
-        bytes.unshift(Number(result & 0xffn));
-        result = result >> 8n;
-    }
-    
-    // Add leading zeros
-    for (let i = 0; i < str.length && str[i] === '1'; i++) {
-        bytes.unshift(0);
-    }
-    
-    return new Uint8Array(bytes);
-}
-
-// Update getWalletKeypair to use the new decoder
+/**
+ * Gets wallet keypair from runtime settings
+ * @param runtime Agent runtime environment
+ * @returns Solana keypair for transactions
+ * @throws Error if private key is missing or invalid
+ */
 function getWalletKeypair(runtime: IAgentRuntime): Keypair {
     const privateKeyString = runtime.getSetting("WALLET_PRIVATE_KEY");
     if (!privateKeyString) {
@@ -675,7 +667,42 @@ function getWalletKeypair(runtime: IAgentRuntime): Keypair {
     }
 }
 
-// Add helper to filter and deduplicate pairs
+/**
+ * Gets current SOL balance for wallet
+ * @param runtime Agent runtime environment
+ * @returns Balance in SOL
+ */
+async function getWalletBalance(runtime: IAgentRuntime): Promise<number> {
+    try {
+        const walletKeypair = getWalletKeypair(runtime);
+        const walletPubKey = walletKeypair.publicKey;
+
+        // Fetch balance from RPC
+        const connection = new Connection(
+            runtime.getSetting("RPC_URL") || "https://api.mainnet-beta.solana.com"
+        );
+        
+        const balance = await connection.getBalance(walletPubKey);
+        const solBalance = balance / 1e9; // Convert lamports to SOL
+
+        elizaLogger.log("Fetched wallet balance:", {
+            address: walletPubKey.toBase58(),
+            lamports: balance,
+            sol: solBalance
+        });
+
+        return solBalance;
+    } catch (error) {
+        elizaLogger.error("Failed to get wallet balance:", error);
+        return 0;
+    }
+}
+
+/**
+ * Filters and deduplicates token pairs by liquidity
+ * @param pairs Array of token pairs from DexScreener
+ * @returns Array of unique pairs with highest liquidity
+ */
 function filterUniquePairs(pairs: any[]): any[] {
     // Create a map to store best pair for each token
     const bestPairs = new Map();
@@ -696,11 +723,15 @@ function filterUniquePairs(pairs: any[]): any[] {
     return Array.from(bestPairs.values());
 }
 
+/**
+ * Gets on-chain actions for the GOAT plugin
+ * @param params Plugin parameters including wallet and DEX settings
+ * @returns Array of available trading actions
+ */
 export async function getOnChainActions<TWalletClient extends WalletClient>({
     wallet,
     plugins,
-    dexscreener,
-    tweetTrade
+    dexscreener
 }: GetOnChainActionsParams<TWalletClient>): Promise<Action[]> {
     const tools = await getTools<TWalletClient>({
         wallet,
@@ -736,4 +767,30 @@ export async function getOnChainActions<TWalletClient extends WalletClient>({
     }
 
     return allActions;
+}
+
+// Add helper to decode base58 private key
+function decodeBase58(str: string): Uint8Array {
+    const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    const ALPHABET_MAP = new Map(ALPHABET.split('').map((c, i) => [c, BigInt(i)]));
+    
+    let result = BigInt(0);
+    for (const char of str) {
+        const value = ALPHABET_MAP.get(char);
+        if (value === undefined) throw new Error('Invalid base58 character');
+        result = result * BigInt(58) + value;
+    }
+    
+    const bytes = [];
+    while (result > 0n) {
+        bytes.unshift(Number(result & 0xffn));
+        result = result >> 8n;
+    }
+    
+    // Add leading zeros
+    for (let i = 0; i < str.length && str[i] === '1'; i++) {
+        bytes.unshift(0);
+    }
+    
+    return new Uint8Array(bytes);
 }
