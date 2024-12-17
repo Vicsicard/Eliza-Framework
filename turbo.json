@@ -13,7 +13,11 @@
         },
         "@ai16z/plugin-solana#build": {
             "outputs": ["dist/**"],
-            "dependsOn": ["@ai16z/plugin-trustdb#build"]
+            "dependsOn": ["@ai16z/plugin-trustdb#build", "@ai16z/plugin-tee#build"]
+        },
+        "@ai16z/plugin-goat#build": {
+            "outputs": ["dist/**"],
+            "dependsOn": ["@ai16z/plugin-solana#build", "@ai16z/client-twitter#build"]
         },
         "eliza-docs#build": {
             "outputs": ["build/**"]
