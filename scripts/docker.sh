@@ -54,6 +54,7 @@ case "$1" in
             "plugin-icp"
             "plugin-image-generation"
             "plugin-intiface"
+            "plugin-neotrader"
             "plugin-node"
             "plugin-solana"
             "plugin-starknet"
