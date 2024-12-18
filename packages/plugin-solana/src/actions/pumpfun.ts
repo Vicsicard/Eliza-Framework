@@ -280,7 +280,7 @@ export default {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        _options: { [key: string]: unknown },
+        _response: Memory,
         callback?: HandlerCallback
     ): Promise<boolean> => {
         console.log("Starting CREATE_AND_BUY_TOKEN handler...");

@@ -97,7 +97,7 @@ export const swapAction = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        options: any,
+        _response: Memory,
         callback?: any
     ) => {
         try {
@@ -106,6 +106,15 @@ export const swapAction = {
             ) as `0x${string}`;
             const walletProvider = new WalletProvider(privateKey);
             const action = new SwapAction(walletProvider);
+            // FIX: The previous way options was passed in here through the handler gives an empty value and has to be implemented differently.
+            // options for type SwapParams should be gotten from the state/memory.
+            // Will be assigned empty for now
+            const options: SwapParams = {
+                chain: "mainnet",
+                fromToken: "0x0000",
+                toToken: "0x0000",
+                amount: "",
+            };
             return await action.swap(options);
         } catch (error) {
             console.error("Error in swap handler:", error.message);

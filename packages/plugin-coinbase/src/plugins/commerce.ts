@@ -137,7 +137,7 @@ export const createCoinbaseChargeAction: Action = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        _options: any,
+        _response: Memory,
         callback: HandlerCallback
     ) => {
         elizaLogger.log("Composing state for message:", message);
@@ -329,7 +329,7 @@ export const getAllChargesAction: Action = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        _options: any,
+        _response: Memory,
         callback: HandlerCallback
     ) => {
         try {
@@ -394,7 +394,7 @@ export const getChargeDetailsAction: Action = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        _options: any,
+        _response: Memory,
         callback: HandlerCallback
     ) => {
         elizaLogger.log("Composing state for message:", message);

@@ -129,7 +129,7 @@ const videoGeneration: Action = {
         runtime: IAgentRuntime,
         message: Memory,
         _state: State,
-        _options: any,
+        _response: Memory,
         callback: HandlerCallback
     ) => {
         elizaLogger.log("Video generation request:", message);

@@ -88,9 +88,12 @@ export const continueAction: Action = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        options: any,
+        _response: Memory,
         callback: HandlerCallback
     ) => {
+        if (_response) {
+            callback(_response.content as Content);
+        }
         if (
             message.content.text.endsWith("?") ||
             message.content.text.endsWith("!")
@@ -144,7 +147,7 @@ export const continueAction: Action = {
         response.inReplyTo = message.id;
 
         runtime.databaseAdapter.log({
-            body: { message, context, response },
+            body: { message, context, response: response },
             userId,
             roomId,
             type: "continue",

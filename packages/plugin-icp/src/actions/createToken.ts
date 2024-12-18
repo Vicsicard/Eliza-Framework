@@ -128,7 +128,7 @@ export const executeCreateToken: Action = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State | undefined,
-        _options: { [key: string]: unknown } | undefined,
+        _response: Memory | undefined,
         callback?: HandlerCallback
     ): Promise<void> => {
         callback?.({

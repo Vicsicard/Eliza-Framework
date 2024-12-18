@@ -15,7 +15,6 @@ import { verifyNFT } from "./handlers/verifyNFT.ts";
 export * from "./provider/wallet/walletSolana.ts";
 export * from "./api.ts";
 
-
 export async function sleep(ms: number = 3000) {
     return new Promise((resolve) => {
         setTimeout(resolve, ms);
@@ -51,7 +50,7 @@ const nftCollectionGeneration: Action = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        options: { [key: string]: unknown },
+        _response: Memory,
         callback: HandlerCallback
     ) => {
         try {
@@ -78,7 +77,6 @@ const nftCollectionGeneration: Action = {
             });
 
             elizaLogger.log("NFT Address:", nftRes);
-
 
             callback({
                 text: `Congratulations to you! 🎉🎉🎉 \nCollection : ${collectionAddressRes.link}\n NFT: ${nftRes.link}`, //caption.description,

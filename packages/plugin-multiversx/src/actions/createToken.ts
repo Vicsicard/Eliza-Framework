@@ -64,7 +64,7 @@ export default {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        _options: { [key: string]: unknown },
+        _response: Memory,
         callback?: HandlerCallback
     ) => {
         elizaLogger.log("Starting CREATE_TOKEN handler...");

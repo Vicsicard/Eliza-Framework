@@ -74,7 +74,7 @@ export const deployTokenContractAction: Action = {
         runtime: IAgentRuntime,
         _message: Memory,
         state: State,
-        _options: any,
+        _response: Memory,
         callback: HandlerCallback
     ) => {
         elizaLogger.log("Starting DEPLOY_TOKEN_CONTRACT handler...");
@@ -303,7 +303,7 @@ export const invokeContractAction: Action = {
         runtime: IAgentRuntime,
         _message: Memory,
         state: State,
-        _options: any,
+        _response: Memory,
         callback: HandlerCallback
     ) => {
         elizaLogger.log("Starting INVOKE_CONTRACT handler...");
@@ -470,7 +470,7 @@ export const readContractAction: Action = {
         runtime: IAgentRuntime,
         _message: Memory,
         state: State,
-        _options: any,
+        _response: Memory,
         callback: HandlerCallback
     ) => {
         elizaLogger.log("Starting READ_CONTRACT handler...");

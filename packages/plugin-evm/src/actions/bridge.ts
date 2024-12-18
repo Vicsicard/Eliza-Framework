@@ -86,13 +86,23 @@ export const bridgeAction = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        options: any
+        _response: Memory
     ) => {
         const privateKey = runtime.getSetting(
             "EVM_PRIVATE_KEY"
         ) as `0x${string}`;
         const walletProvider = new WalletProvider(privateKey);
         const action = new BridgeAction(walletProvider);
+        // FIX: The previous way options was passed in here through the handler gives an empty value and has to be implemented differently.
+        // options for type BridgeParams should be gotten from the state/memory.
+        // Will be assigned empty for now
+        const options: BridgeParams = {
+            fromChain: "mainnet",
+            toChain: "base",
+            fromToken: "0x0000",
+            toToken: "0x0000",
+            amount: "",
+        };
         return action.bridge(options);
     },
     template: bridgeTemplate,

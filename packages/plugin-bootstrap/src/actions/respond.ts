@@ -1,13 +1,17 @@
 import {
     ActionExample,
+    Content,
+    HandlerCallback,
     IAgentRuntime,
     Memory,
+    State,
     type Action,
 } from "@ai16z/eliza";
 
-export const noneAction: Action = {
-    name: "NONE",
+export const respondAction: Action = {
+    name: "RESPOND",
     similes: [
+        "RESPOND",
         "NO_ACTION",
         "NO_RESPONSE",
         "NO_REACTION",
@@ -19,11 +23,17 @@ export const noneAction: Action = {
         return true;
     },
     description:
-        "Respond but perform no additional action. This is the default if the agent is speaking and not doing anything additional.",
+        "Respond with a message, or post an original message. This is the default if no other action is specified.",
     handler: async (
         _runtime: IAgentRuntime,
-        _message: Memory
+        _message: Memory,
+        _state: State,
+        _response: Memory,
+        callback: HandlerCallback
     ): Promise<boolean> => {
+        if (_response) {
+            callback(_response.content as Content);
+        }
         return true;
     },
     examples: [
@@ -34,7 +44,7 @@ export const noneAction: Action = {
             },
             {
                 user: "{{user2}}",
-                content: { text: "oh hey", action: "NONE" },
+                content: { text: "oh hey", action: "RESPOND" },
             },
         ],
 
@@ -49,7 +59,7 @@ export const noneAction: Action = {
                 user: "{{user2}}",
                 content: {
                     text: "yeah but its a pain to get into node.js",
-                    action: "NONE",
+                    action: "RESPOND",
                 },
             },
         ],
@@ -58,29 +68,29 @@ export const noneAction: Action = {
                 user: "{{user1}}",
                 content: {
                     text: "the things that were funny 6 months ago are very cringe now",
-                    action: "NONE",
+                    action: "RESPOND",
                 },
             },
             {
                 user: "{{user2}}",
                 content: {
                     text: "lol true",
-                    action: "NONE",
+                    action: "RESPOND",
                 },
             },
             {
                 user: "{{user1}}",
-                content: { text: "too real haha", action: "NONE" },
+                content: { text: "too real haha", action: "RESPOND" },
             },
         ],
         [
             {
                 user: "{{user1}}",
-                content: { text: "gotta run", action: "NONE" },
+                content: { text: "gotta run", action: "RESPOND" },
             },
             {
                 user: "{{user2}}",
-                content: { text: "Okay, ttyl", action: "NONE" },
+                content: { text: "Okay, ttyl", action: "RESPOND" },
             },
             {
                 user: "{{user1}}",
@@ -91,7 +101,7 @@ export const noneAction: Action = {
         [
             {
                 user: "{{user1}}",
-                content: { text: "heyyyyyy", action: "NONE" },
+                content: { text: "heyyyyyy", action: "RESPOND" },
             },
             {
                 user: "{{user2}}",
@@ -101,7 +111,7 @@ export const noneAction: Action = {
                 user: "{{user1}}",
                 content: {
                     text: "chillin man. playing lots of fortnite. what about you",
-                    action: "NONE",
+                    action: "RESPOND",
                 },
             },
         ],
@@ -109,29 +119,29 @@ export const noneAction: Action = {
         [
             {
                 user: "{{user1}}",
-                content: { text: "u think aliens are real", action: "NONE" },
+                content: { text: "u think aliens are real", action: "RESPOND" },
             },
             {
                 user: "{{user2}}",
-                content: { text: "ya obviously", action: "NONE" },
+                content: { text: "ya obviously", action: "RESPOND" },
             },
         ],
 
         [
             {
                 user: "{{user1}}",
-                content: { text: "drop a joke on me", action: "NONE" },
+                content: { text: "drop a joke on me", action: "RESPOND" },
             },
             {
                 user: "{{user2}}",
                 content: {
                     text: "why dont scientists trust atoms cuz they make up everything lmao",
-                    action: "NONE",
+                    action: "RESPOND",
                 },
             },
             {
                 user: "{{user1}}",
-                content: { text: "haha good one", action: "NONE" },
+                content: { text: "haha good one", action: "RESPOND" },
             },
         ],
 
@@ -140,12 +150,12 @@ export const noneAction: Action = {
                 user: "{{user1}}",
                 content: {
                     text: "hows the weather where ur at",
-                    action: "NONE",
+                    action: "RESPOND",
                 },
             },
             {
                 user: "{{user2}}",
-                content: { text: "beautiful all week", action: "NONE" },
+                content: { text: "beautiful all week", action: "RESPOND" },
             },
         ],
     ] as ActionExample[][],

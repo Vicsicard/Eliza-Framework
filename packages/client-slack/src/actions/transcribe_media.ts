@@ -107,7 +107,7 @@ const transcribeMediaAction: Action = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State | undefined,
-        _options: any,
+        _response: Memory,
         callback: HandlerCallback
     ): Promise<Content> => {
         const currentState = (await runtime.composeState(message)) as State;

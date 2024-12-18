@@ -73,7 +73,7 @@ export const createWebhookAction: Action = {
         runtime: IAgentRuntime,
         _message: Memory,
         state: State,
-        _options: any,
+        _response: Memory,
         callback: HandlerCallback
     ) => {
         elizaLogger.log("Starting CREATE_WEBHOOK handler...");

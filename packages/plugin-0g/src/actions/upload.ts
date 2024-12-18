@@ -51,7 +51,7 @@ export const zgUpload: Action = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        _options: any,
+        _response: Memory,
         callback: HandlerCallback
     ) => {
         console.log("ZG_UPLOAD action called");

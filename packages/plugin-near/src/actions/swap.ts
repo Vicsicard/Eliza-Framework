@@ -195,7 +195,7 @@ export const executeSwap: Action = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        _options: { [key: string]: unknown },
+        _response: Memory,
         callback?: HandlerCallback
     ): Promise<boolean> => {
         // Initialize Ref SDK with testnet environment

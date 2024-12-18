@@ -107,7 +107,7 @@ export const executeTransfer: Action = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        _options: { [key: string]: unknown },
+        _response: Memory,
         callback?: HandlerCallback
     ): Promise<boolean> => {
         // Initialize or update state

@@ -371,7 +371,15 @@ export interface MessageExample {
 /**
  * Handler function type for processing messages
  */
-export type Handler = (
+export type ActionHandler = (
+    runtime: IAgentRuntime,
+    message: Memory,
+    state?: State,
+    response?: Memory,
+    callback?: HandlerCallback
+) => Promise<unknown>;
+
+export type EvaluationHandler = (
     runtime: IAgentRuntime,
     message: Memory,
     state?: State,
@@ -410,7 +418,7 @@ export interface Action {
     examples: ActionExample[][];
 
     /** Handler function */
-    handler: Handler;
+    handler: ActionHandler;
 
     /** Action name */
     name: string;
@@ -450,7 +458,7 @@ export interface Evaluator {
     examples: EvaluationExample[];
 
     /** Handler function */
-    handler: Handler;
+    handler: EvaluationHandler;
 
     /** Evaluator name */
     name: string;

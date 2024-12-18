@@ -193,7 +193,7 @@ const summarizeAction = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        options: any,
+        _response: Memory,
         callback: HandlerCallback
     ) => {
         state = (await runtime.composeState(message)) as State;

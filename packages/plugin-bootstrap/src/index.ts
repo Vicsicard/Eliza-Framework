@@ -3,7 +3,7 @@ import { continueAction } from "./actions/continue.ts";
 import { followRoomAction } from "./actions/followRoom.ts";
 import { ignoreAction } from "./actions/ignore.ts";
 import { muteRoomAction } from "./actions/muteRoom.ts";
-import { noneAction } from "./actions/none.ts";
+import { respondAction } from "./actions/respond.ts";
 import { unfollowRoomAction } from "./actions/unfollowRoom.ts";
 import { unmuteRoomAction } from "./actions/unmuteRoom.ts";
 import { factEvaluator } from "./evaluators/fact.ts";
@@ -24,7 +24,7 @@ export const bootstrapPlugin: Plugin = {
         followRoomAction,
         unfollowRoomAction,
         ignoreAction,
-        noneAction,
+        respondAction,
         muteRoomAction,
         unmuteRoomAction,
     ],

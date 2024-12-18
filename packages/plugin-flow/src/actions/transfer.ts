@@ -298,7 +298,7 @@ export const transferAction = {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        _options: { [key: string]: unknown },
+        _response: Memory,
         callback?: HandlerCallback
     ): Promise<boolean> => {
         const flowConnector = await getFlowConnectorInstance(runtime);

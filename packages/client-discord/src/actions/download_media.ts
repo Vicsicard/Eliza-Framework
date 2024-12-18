@@ -85,7 +85,7 @@ export default {
         runtime: IAgentRuntime,
         message: Memory,
         state: State,
-        options: any,
+        _response: Memory,
         callback: HandlerCallback
     ) => {
         const videoService = runtime
