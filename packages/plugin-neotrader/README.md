@@ -1,18 +1,14 @@
-# Autonomous Trading Plugin
+# Autonomous Trading Bot Documentation
 
-Autonomous trading plugin for Solana with built-in safety limits and risk management.
+## Overview
 
-## Features
+The NeoTrader Plugin implements an autonomous trading bot for executing trades on the Solana blockchain. It provides automated monitoring of market conditions, position management, and trade execution with built-in risk management and safety features.
 
-- Automated trading based on market conditions
-- Built-in safety limits and position sizing
-- Stop loss protection
-- Trust score evaluation
-- Liquidity monitoring
+## Core Components
 
-## Safety Limits
+### Safety Limits
 
-The plugin enforces several safety limits to protect trades:
+The bot operates within strict safety parameters defined in `SAFETY_LIMITS`:
 
 ```typescript
 const SAFETY_LIMITS = {
@@ -22,64 +18,190 @@ const SAFETY_LIMITS = {
     MIN_LIQUIDITY: 5000,       // Minimum $5000 liquidity required
     MIN_VOLUME: 10000,         // Minimum $10000 24h volume required
     MIN_TRUST_SCORE: 0.4,      // Minimum trust score to trade
-    MAX_PRICE_IMPACT: 0.03,    // Maximum 3% price impact allowed
-    STOP_LOSS: 0.15,          // 15% stop loss trigger
-    CHECK_INTERVAL: 5 * 60 * 1000  // Check every 5 minutes
+    STOP_LOSS: 0.20,          // 20% stop loss trigger
+    CHECK_INTERVAL: 5 * 60 * 1000,  // Check every 5 minutes
+    TAKE_PROFIT: 0.12,         // Take profit at 12% gain
+    TRAILING_STOP: 0.20,       // 20% trailing stop loss
+    PARTIAL_TAKE: 0.06,        // Take 6% profit at 6% gain
 }
 ```
 
-## Position Sizing
+### Position Management
 
-Trades are limited by two factors:
-1. Maximum 10% of token's available liquidity
-2. Maximum 10% of wallet's SOL balance
+Positions are tracked using the `Position` interface:
 
-The smaller of these two limits is used as the maximum position size.
+```typescript
+interface Position {
+    token: string;              // Token symbol
+    tokenAddress: string;       // Token address
+    entryPrice: number;         // Entry price in USD
+    amount: number;             // Position size
+    timestamp: number;          // Entry timestamp
+    sold?: boolean;             // Position closed flag
+    exitPrice?: number;         // Exit price if sold
+    exitTimestamp?: number;     // Exit timestamp if sold
+    initialMetrics: {
+        trustScore: number;     // Initial trust score
+        volume24h: number;      // 24h volume at entry
+        liquidity: { usd: number }; // Liquidity at entry
+        riskLevel: "LOW" | "MEDIUM" | "HIGH";
+    };
+    highestPrice?: number;      // Highest price for trailing stop
+    partialTakeProfit?: boolean; // Partial profit taken flag
+}
+```
 
-## Trust Score Evaluation
+## Key Features
 
-Each trade opportunity is evaluated based on:
+### 1. Autonomous Trading
+
+The bot implements autonomous trading through the `autonomousTradeAction` which:
+- Monitors market conditions continuously
+- Evaluates trading opportunities based on configurable criteria
+- Manages existing positions with automated risk management
+- Executes trades when conditions are met
+
+### 2. Risk Management
+
+Multiple risk management features are implemented:
+- Stop loss protection at 20%
+- Trailing stop loss at 20% from highest price
+- Take profit at 12% gain
+- Partial profit taking at 6% gain
+- Maximum position sizing based on liquidity
+- Minimum liquidity and volume requirements
+- Trust score evaluation for each trade
+
+### 3. Trust Evaluation
+
+The `evaluateTrust` function calculates a trust score based on:
 - Liquidity (40% weight)
-- 24h Volume (40% weight)
-- Market Cap (20% weight)
+- 24-hour volume (40% weight)
+- Market cap (20% weight)
 
-## Installation
+### 4. Trade Execution
 
-```bash
-pnpm add @goat-sdk/plugin-goat
-```
-
-## Configuration
-
-Required environment variables:
-```
-WALLET_PUBLIC_KEY=your_solana_public_key
-WALLET_PRIVATE_KEY=your_solana_private_key
-RPC_URL=your_rpc_url
-```
-
-## Safety Features
-
-- Minimum trade size enforcement
-- Maximum position size limits
+The `executeTrade` function handles:
 - Slippage protection
+- Gas optimization
+- Transaction retry logic
+- Error handling
+- Confirmation verification
+
+### 5. Position Monitoring
+
+Continuous position monitoring includes:
+- Price change tracking
+- Profit/loss calculation
 - Stop loss monitoring
-- Liquidity requirements
-- Volume requirements
-- Trust score evaluation
+- Take profit evaluation
+- Trailing stop adjustment
+
+### 6. Social Integration
+
+Trade notifications are automatically posted to Twitter via the `tweetTradeUpdate` function, including:
+- Trade direction (buy/sell)
+- Token symbol
+- Amount traded
+- Price
+- Profit/loss for sells
+- Transaction link
+
+## Usage
+
+### Configuration Requirements
+
+1. Wallet Configuration:
+```typescript
+const walletAddress = runtime.getSetting("WALLET_PUBLIC_KEY");
+const privateKeyString = runtime.getSetting("WALLET_PRIVATE_KEY");
+```
+
+2. RPC Configuration:
+```typescript
+const connection = new Connection(
+    runtime.getSetting("RPC_URL") || "https://api.mainnet-beta.solana.com"
+);
+```
+
+### Starting the Bot
+
+The bot can be started using:
+```typescript
+await autonomousTradeAction.handler(
+    runtime,
+    { content: { source: "auto" } } as Memory,
+    undefined,
+    undefined,
+    callback
+);
+```
 
 ## Error Handling
 
-- Graceful failure for low funds
-- Transaction validation
-- Quote verification
-- Detailed error logging
+The bot implements comprehensive error handling:
+- Transaction failures
+- API errors
+- Network issues
+- Invalid responses
+- Wallet errors
 
-## Monitoring
+All errors are logged via `elizaLogger` for monitoring and debugging.
 
-The plugin logs detailed information about:
-- Trade execution
-- Position management
-- Trust evaluation
-- Balance checks
+## Data Persistence
+
+Position data is persisted using the runtime cache manager:
+- `loadPositions`: Loads saved positions on startup
+- `savePositions`: Saves position updates
+
+## Monitoring and Logging
+
+Extensive logging is implemented throughout using `elizaLogger`:
+- Trade execution details
+- Position updates
 - Error conditions
+- Market data
+- Performance metrics
+
+## Security Considerations
+
+1. Wallet Validation:
+```typescript
+const validateWalletAddress = (address: string | undefined): boolean => {
+    if (!address) return false;
+    try {
+        new PublicKey(address);
+        return true;
+    } catch {
+        return false;
+    }
+};
+```
+
+2. Slippage Protection:
+- Maximum slippage limit of 5%
+- Quote validation before execution
+- Transaction simulation
+
+3. Position Size Limits:
+- Maximum 10% of token liquidity
+- Minimum trade size enforcement
+- Balance checks before trading
+
+## Best Practices
+
+1. Always verify wallet configuration before trading
+2. Monitor log output for trading activity
+3. Regularly check position status
+4. Keep private keys secure
+5. Monitor gas costs and adjust as needed
+6. Review trust scores periodically
+7. Keep safety limits updated based on market conditions
+
+## Dependencies
+
+- @solana/web3.js: Solana blockchain interaction
+- @goat-sdk/core: GOAT plugin framework
+- @ai16z/eliza: Agent runtime and utilities
+- @ai16z/client-auto: Automation client
+- @ai16z/client-twitter: Social integration
