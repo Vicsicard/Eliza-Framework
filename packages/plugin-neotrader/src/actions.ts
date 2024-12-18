@@ -1,6 +1,6 @@
 /**
- * Auto Trader Plugin - Autonomous Trading Actions
- * 
+ * NeoTrader Plugin - Autonomous Trading Actions
+ *
  * This module implements autonomous trading functionality for the GOAT plugin.
  * It handles trade execution, position management, and risk evaluation.
  */
@@ -40,12 +40,11 @@ const SAFETY_LIMITS = {
     MIN_LIQUIDITY: 5000,       // Minimum $5000 liquidity required
     MIN_VOLUME: 10000,         // Minimum $10000 24h volume required
     MIN_TRUST_SCORE: 0.4,      // Minimum trust score to trade
-    MAX_PRICE_IMPACT: 0.03,    // Maximum 3% price impact allowed
-    STOP_LOSS: 0.15,          // 15% stop loss trigger
+    STOP_LOSS: 0.20,          // 20% stop loss trigger
     CHECK_INTERVAL: 5 * 60 * 1000,  // Check every 5 minutes
-    TAKE_PROFIT: 0.2,          // Take profit at 20% gain
-    TRAILING_STOP: 0.05,       // 5% trailing stop loss
-    PARTIAL_TAKE: 0.1,         // Take 50% profit at 10% gain
+    TAKE_PROFIT: 0.12,          // Take profit at 12% gain
+    TRAILING_STOP: 0.20,       // 20% trailing stop loss
+    PARTIAL_TAKE: 0.06,         // Take 6% profit at 6% gain
 };
 
 /**
@@ -53,7 +52,8 @@ const SAFETY_LIMITS = {
  * Represents an open trading position
  */
 interface Position {
-    token: string;              // Token symbol
+    token: string;
+    tokenAddress: string;             // Token symbol
     entryPrice: number;         // Entry price in USD
     amount: number;             // Position size
     timestamp: number;          // Entry timestamp
@@ -93,7 +93,7 @@ function createAction(tool: Tool): Action {
                 const parameterContext = composeParameterContext(tool, currentState);
                 const parameters = await generateParameters(runtime, parameterContext, tool);
                 const parsedParameters = tool.parameters.safeParse(parameters);
-                
+
                 if (!parsedParameters.success) {
                     callback?.({ text: `Invalid parameters for action ${tool.name}: ${parsedParameters.error.message}`, content: { error: parsedParameters.error.message }});
                     return false;
@@ -188,7 +188,7 @@ const sellTokenAction: Action = {
 
             // Execute sell
             const sellResult = { success: true }; // Implement actual sell logic
-            
+
             if (sellResult.success) {
                 position.sold = true;
                 callback?.({
@@ -212,22 +212,37 @@ const sellTokenAction: Action = {
 // Add helper function for selling
 async function sellPosition(position: Position, currentPrice: number, runtime: IAgentRuntime): Promise<boolean> {
     try {
-        // Execute sell using executeTrade
-        const tradeResult = await executeTrade(runtime, {
-            tokenAddress: "So11111111111111111111111111111111111111112", // SOL address
+        elizaLogger.log("Attempting to sell position:", {
+            token: position.token,
+            tokenAddress: position.tokenAddress,
             amount: position.amount,
-            slippage: 0.01
+            currentPrice
+        });
+
+        // Execute sell by swapping from token to SOL
+        const tradeResult = await executeTrade(runtime, {
+            tokenAddress: position.tokenAddress,
+            amount: position.amount,
+            slippage: SAFETY_LIMITS.MAX_SLIPPAGE,
+            isSell: true
+        });
+
+        // Log trade result
+        elizaLogger.log("Sell trade result:", {
+            success: tradeResult.success,
+            token: position.token,
+            tokenAddress: position.tokenAddress,
+            result: tradeResult
         });
 
         if (tradeResult.success) {
             position.sold = true;
             position.exitPrice = currentPrice;
             position.exitTimestamp = Date.now();
-            
-            const pnl = ((currentPrice - position.entryPrice) / position.entryPrice) * 100;
-            elizaLogger.log(`Position closed and swapped to SOL: ${position.token}, PnL: ${pnl.toFixed(2)}%`);
 
-            // Tweet the sell
+            const pnl = ((currentPrice - position.entryPrice) / position.entryPrice) * 100;
+            elizaLogger.log(`Position closed: ${position.token}, PnL: ${pnl.toFixed(2)}%`);
+
             await tweetTradeUpdate(runtime, {
                 action: 'SELL',
                 token: position.token,
@@ -246,7 +261,7 @@ async function sellPosition(position: Position, currentPrice: number, runtime: I
 }
 
 // Add trust evaluation function
-async function evaluateTrust(runtime: IAgentRuntime, pair: any): Promise<number> {
+async function evaluateTrust(runtime: IAgentRuntime, pair: any): Promise<number>{
     try {
         // Calculate trust score from metrics
         const metrics = {
@@ -315,17 +330,20 @@ const autonomousTradeAction: Action = {
             }
 
             elizaLogger.log("Starting autonomous trade monitoring...");
-            
+
             // Start periodic trading checks
             const startTrading = async () => {
                 try {
                     elizaLogger.log("Starting trading cycle...");
-                    
-                    // Get token addresses
+
+                    // Load saved positions first
+                    await loadPositions(runtime);
+
+                    // Get token addresses and fetch data
                     const tokenAddresses = loadTokenAddresses();
                     const tokensUrl = `https://api.dexscreener.com/latest/dex/tokens/${tokenAddresses.join(',')}`;
                     elizaLogger.log("Fetching DexScreener data from:", tokensUrl);
-                    
+
                     const data = await fetchDexScreenerData(tokensUrl);
                     if (!data.pairs || !data.pairs.length) {
                         elizaLogger.warn("No pairs found in DexScreener response");
@@ -335,183 +353,16 @@ const autonomousTradeAction: Action = {
                     // Filter to get only the best pair for each token
                     const uniquePairs = filterUniquePairs(data.pairs);
                     elizaLogger.log(`Processing ${uniquePairs.length} unique pairs...`);
-                    
-                    // Process pairs
-                    for (const pair of uniquePairs) {
-                        try {
-                            if (!validateWalletAddress(pair.baseToken?.address)) {
-                                elizaLogger.warn(`Invalid token address: ${pair.baseToken?.address}`);
-                                continue;
-                            }
 
-                            // Calculate trust score
-                            const trustScore = await evaluateTrust(runtime, pair);
+                    // First monitor existing positions
+                    await monitorExistingPositions(uniquePairs, runtime, callback);
 
-                            // Skip if trust score too low
-                            if (trustScore < SAFETY_LIMITS.MIN_TRUST_SCORE) {
-                                elizaLogger.warn(`Low trust score for ${pair.baseToken.symbol}: ${trustScore}`);
-                                continue;
-                            }
+                    // Then look for new trade opportunities
+                    await evaluateNewTrades(uniquePairs, runtime, callback);
 
-                            // Skip if liquidity too low
-                            if ((pair.liquidity?.usd || 0) < SAFETY_LIMITS.MIN_LIQUIDITY) {
-                                continue;
-                            }
+                    // Save updated positions
+                    await savePositions(runtime);
 
-                            // Skip if volume too low
-                            if ((pair.volume?.h24 || 0) < SAFETY_LIMITS.MIN_VOLUME) {
-                                continue;
-                            }
-
-                            // Get wallet keypair first
-                            const walletKeypair = getWalletKeypair(runtime);
-
-                            // Get wallet balance
-                            const balance = await getWalletBalance(runtime);
-                            elizaLogger.log("Checking wallet balance:", {
-                                solBalance: balance,
-                                walletAddress: walletKeypair.publicKey.toBase58(),
-                                rpcUrl: runtime.getSetting("RPC_URL") || "https://api.mainnet-beta.solana.com"
-                            });
-
-                            if (balance <= 0) {
-                                elizaLogger.warn("Insufficient wallet balance:", {
-                                    balance,
-                                    minRequired: SAFETY_LIMITS.MIN_LIQUIDITY * SAFETY_LIMITS.MAX_POSITION_SIZE,
-                                    walletAddress: walletKeypair.publicKey.toBase58()
-                                });
-                                continue;
-                            }
-
-                            // Update position size calculation
-                            const positionSize = Math.min(
-                                pair.liquidity.usd * SAFETY_LIMITS.MAX_POSITION_SIZE, // 10% of liquidity
-                                balance * 0.1  // 10% of wallet balance
-                            );
-
-                            // Add minimum size check before trading
-                            if (positionSize < SAFETY_LIMITS.MINIMUM_TRADE) {
-                                elizaLogger.warn("Skipping trade - position size too small:", {
-                                    calculatedSize: positionSize,
-                                    minimumRequired: SAFETY_LIMITS.MINIMUM_TRADE,
-                                    token: pair.baseToken.symbol
-                                });
-                                continue;
-                            }
-
-                            // Then proceed with trade if size is valid
-                            if (positionSize >= SAFETY_LIMITS.MINIMUM_TRADE) {
-                                const tradeResult = await executeTrade(runtime, {
-                                    tokenAddress: pair.baseToken.address,
-                                    amount: positionSize,
-                                    slippage: SAFETY_LIMITS.MAX_SLIPPAGE
-                                });
-
-                                if (tradeResult.success) {
-                                    // Track new position
-                                    positions.set(pair.baseToken.address, {
-                                        token: pair.baseToken.symbol,
-                                        entryPrice: Number(pair.priceUsd),
-                                        amount: positionSize,
-                                        timestamp: Date.now(),
-                                        initialMetrics: {
-                                            trustScore,
-                                            volume24h: pair.volume?.h24 || 0,
-                                            liquidity: { usd: pair.liquidity?.usd || 0 },
-                                            riskLevel: trustScore > 0.8 ? "LOW" : trustScore > 0.5 ? "MEDIUM" : "HIGH"
-                                        }
-                                    });
-
-                                    if (callback) {
-                                        callback({
-                                            text: `🤖 Trade executed: ${pair.baseToken.symbol}\nAmount: $${positionSize.toFixed(2)}\nPrice: $${Number(pair.priceUsd).toFixed(6)}`,
-                                            content: {
-                                                ...tradeResult,
-                                                symbol: pair.baseToken.symbol,
-                                                amount: positionSize,
-                                                price: pair.priceUsd,
-                                                position: positions.get(pair.baseToken.address)
-                                            }
-                                        });
-                                    }
-
-                                    // Tweet the trade
-                                    await tweetTradeUpdate(runtime, {
-                                        action: 'BUY',
-                                        token: pair.baseToken.symbol,
-                                        amount: positionSize,
-                                        price: Number(pair.priceUsd),
-                                        signature: tradeResult.signature
-                                    });
-                                }
-                            }
-
-                            // Monitor existing positions
-                            const position = positions.get(pair.baseToken.address);
-                            if (position && !position.sold) {
-                                const currentPrice = Number(pair.priceUsd);
-                                const priceChange = (currentPrice - position.entryPrice) / position.entryPrice;
-
-                                // Take full profit at 20% gain
-                                if (priceChange >= SAFETY_LIMITS.TAKE_PROFIT) {
-                                    elizaLogger.log(`Taking profit for ${position.token} at ${(priceChange * 100).toFixed(2)}%`);
-                                    await sellPosition(position, currentPrice, runtime);
-                                    return;
-                                }
-
-                                // Take partial profit at 10% gain
-                                if (priceChange >= SAFETY_LIMITS.PARTIAL_TAKE && !position.partialTakeProfit) {
-                                    const halfPosition = { ...position, amount: position.amount * 0.5 };
-                                    elizaLogger.log(`Taking partial profit for ${position.token} at ${(priceChange * 100).toFixed(2)}%`);
-                                    await sellPosition(halfPosition, currentPrice, runtime);
-                                    position.amount *= 0.5;
-                                    position.partialTakeProfit = true;
-                                    return;
-                                }
-
-                                // Trailing stop loss
-                                if (currentPrice > position.highestPrice || !position.highestPrice) {
-                                    position.highestPrice = currentPrice;
-                                }
-                                
-                                const dropFromHigh = (position.highestPrice - currentPrice) / position.highestPrice;
-                                if (dropFromHigh >= SAFETY_LIMITS.TRAILING_STOP) {
-                                    elizaLogger.log(`Trailing stop triggered for ${position.token} at ${(dropFromHigh * 100).toFixed(2)}% drop from high`);
-                                    await sellPosition(position, currentPrice, runtime);
-                                    return;
-                                }
-
-                                const priceDrop = (position.entryPrice - currentPrice) / position.entryPrice;
-                                
-                                if (priceDrop > SAFETY_LIMITS.STOP_LOSS) {
-                                    elizaLogger.warn(`Stop loss triggered for ${position.token}`);
-                                    const sellResult = await sellPosition(position, currentPrice, runtime);
-                                    
-                                    if (sellResult) {
-                                        elizaLogger.log(`Successfully sold ${position.token} at stop loss`);
-                                        if (callback) {
-                                            callback({
-                                                text: `🔴 Stop loss triggered: Sold ${position.token}\nEntry: $${position.entryPrice.toFixed(6)}\nExit: $${currentPrice.toFixed(6)}\nLoss: ${(priceDrop * 100).toFixed(2)}%`,
-                                                content: {
-                                                    action: "STOP_LOSS",
-                                                    token: position.token,
-                                                    entryPrice: position.entryPrice,
-                                                    exitPrice: currentPrice,
-                                                    loss: priceDrop
-                                                }
-                                            });
-                                        }
-                                    } else {
-                                        elizaLogger.error(`Failed to execute stop loss for ${position.token}`);
-                                    }
-                                }
-                            }
-
-                        } catch (pairError) {
-                            elizaLogger.error(`Error processing pair: ${pairError.message}`);
-                            continue;
-                        }
-                    }
                 } catch (error) {
                     elizaLogger.error("Trading cycle error:", error instanceof Error ? error.message : error);
                 }
@@ -519,16 +370,16 @@ const autonomousTradeAction: Action = {
 
             // Start periodic checks with stored ID
             const intervalId = setInterval(startTrading, SAFETY_LIMITS.CHECK_INTERVAL);
-            
+
             // Store just the numeric ID
             await runtime.cacheManager.set("trading_interval_id", intervalId[Symbol.toPrimitive]());
-            
+
             // Execute initial check
             await startTrading();
 
             callback?.({
                 text: "🤖 Autonomous trading started. Monitoring market conditions...",
-                content: { 
+                content: {
                     action: "AUTONOMOUS_TRADE",
                     status: "started",
                     interval: SAFETY_LIMITS.CHECK_INTERVAL
@@ -566,10 +417,26 @@ async function executeTrade(
         tokenAddress: string;
         amount: number;
         slippage: number;
+        isSell?: boolean;
     }
 ): Promise<any> {
     try {
         elizaLogger.log("Executing trade with params:", params);
+
+        const SOL_ADDRESS = "So11111111111111111111111111111111111111112";
+
+        // Set input/output based on trade direction
+        const inputMint = params.isSell ? params.tokenAddress : SOL_ADDRESS;
+        const outputMint = params.isSell ? SOL_ADDRESS : params.tokenAddress;
+
+        // Convert amount to lamports/smallest unit
+        const adjustedAmount = Math.floor(params.amount * 1e9);
+
+        elizaLogger.log("Fetching quote with params:", {
+            inputMint,
+            outputMint,
+            amount: adjustedAmount
+        });
 
         // Validate minimum amount
         if (params.amount < SAFETY_LIMITS.MINIMUM_TRADE) {
@@ -593,19 +460,24 @@ async function executeTrade(
         );
 
         // Setup swap parameters
-        const inputTokenCA = "So11111111111111111111111111111111111111112"; // SOL
-        const outputTokenCA = params.tokenAddress;
-        const adjustedAmount = Math.floor(params.amount * 1e9); // Convert to lamports and ensure integer
+        const solAddress = "So11111111111111111111111111111111111111112"; // SOL
 
-        elizaLogger.log("Fetching quote with params:", {
-            inputMint: inputTokenCA,
-            outputMint: outputTokenCA,
-            amount: adjustedAmount
+        // For sells, swap from token to SOL. For buys, swap from SOL to token
+        const inputTokenCA = params.isSell ? params.tokenAddress : solAddress;
+        const outputTokenCA = params.isSell ? solAddress : params.tokenAddress;
+        const swapAmount = Math.floor(params.amount * 1e9);
+
+        elizaLogger.log("Trade execution details:", {
+            isSell: params.isSell,
+            inputToken: inputTokenCA,
+            outputToken: outputTokenCA,
+            amount: params.amount,
+            slippage: params.slippage
         });
 
         // Get quote
         const quoteResponse = await fetch(
-            `https://quote-api.jup.ag/v6/quote?inputMint=${inputTokenCA}&outputMint=${outputTokenCA}&amount=${adjustedAmount}&slippageBps=${Math.floor(params.slippage * 10000)}`
+            `https://quote-api.jup.ag/v6/quote?inputMint=${inputTokenCA}&outputMint=${outputTokenCA}&amount=${swapAmount}&slippageBps=${Math.floor(params.slippage * 10000)}`
         );
 
         if (!quoteResponse.ok) {
@@ -702,7 +574,7 @@ async function fetchDexScreenerData(url: string) {
                 'User-Agent': 'Mozilla/5.0' // Some APIs require a user agent
             }
         });
-        
+
         // Check if response is OK
         if (!response.ok) {
             throw new Error(`DexScreener API error: ${response.status} ${response.statusText}`);
@@ -761,7 +633,7 @@ async function getWalletBalance(runtime: IAgentRuntime): Promise<number> {
         const connection = new Connection(
             runtime.getSetting("RPC_URL") || "https://api.mainnet-beta.solana.com"
         );
-        
+
         const balance = await connection.getBalance(walletPubKey);
         const solBalance = balance / 1e9; // Convert lamports to SOL
 
@@ -786,14 +658,14 @@ async function getWalletBalance(runtime: IAgentRuntime): Promise<number> {
 function filterUniquePairs(pairs: any[]): any[] {
     // Create a map to store best pair for each token
     const bestPairs = new Map();
-    
+
     for (const pair of pairs) {
         const tokenAddress = pair.baseToken?.address;
         if (!tokenAddress) continue;
 
         // Get existing best pair for this token
         const existingPair = bestPairs.get(tokenAddress);
-        
+
         // If no existing pair or this pair has better liquidity, update
         if (!existingPair || (pair.liquidity?.usd || 0) > (existingPair.liquidity?.usd || 0)) {
             bestPairs.set(tokenAddress, pair);
@@ -821,7 +693,7 @@ export async function getOnChainActions<TWalletClient extends WalletClient>({
 
     // Create base actions
     const baseActions = tools.map(tool => createAction(tool));
-    
+
     // Add autonomous trade action
     const allActions = [...baseActions, autonomousTradeAction, sellTokenAction];
 
@@ -853,25 +725,25 @@ export async function getOnChainActions<TWalletClient extends WalletClient>({
 function decodeBase58(str: string): Uint8Array {
     const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
     const ALPHABET_MAP = new Map(ALPHABET.split('').map((c, i) => [c, BigInt(i)]));
-    
+
     let result = BigInt(0);
     for (const char of str) {
         const value = ALPHABET_MAP.get(char);
         if (value === undefined) throw new Error('Invalid base58 character');
         result = result * BigInt(58) + value;
     }
-    
+
     const bytes = [];
     while (result > 0n) {
         bytes.unshift(Number(result & 0xffn));
         result = result >> 8n;
     }
-    
+
     // Add leading zeros
     for (let i = 0; i < str.length && str[i] === '1'; i++) {
         bytes.unshift(0);
     }
-    
+
     return new Uint8Array(bytes);
 }
 
@@ -915,5 +787,292 @@ async function tweetTradeUpdate(
             error: error instanceof Error ? error.message : error,
             params
         });
+    }
+}
+
+// Helper function to monitor existing positions
+async function monitorExistingPositions(
+    pairs: any[],
+    runtime: IAgentRuntime,
+    callback?: HandlerCallback
+): Promise<void> {
+    elizaLogger.log("Starting position monitoring...");
+    elizaLogger.log("Current positions:", Array.from(positions.entries()));
+
+    for (const pair of pairs) {
+        try {
+            if (!validateWalletAddress(pair.baseToken?.address)) {
+                elizaLogger.log(`Skipping invalid token address: ${pair.baseToken?.address}`);
+                continue;
+            }
+
+            const currentPosition = positions.get(pair.baseToken.address);
+            elizaLogger.log(`Checking position for ${pair.baseToken.symbol}:`, {
+                hasPosition: !!currentPosition,
+                isSold: currentPosition?.sold,
+                position: currentPosition
+            });
+
+            if (!currentPosition || currentPosition.sold) {
+                continue;
+            }
+
+            const currentPrice = Number(pair.priceUsd);
+            const positionSize = currentPosition.amount;
+
+            // Log position metrics
+            elizaLogger.log(`Position metrics for ${pair.baseToken.symbol}:`, {
+                currentPrice,
+                entryPrice: currentPosition.entryPrice,
+                positionSize,
+                highestPrice: currentPosition.highestPrice
+            });
+
+            // Monitor existing position
+            const priceChange = (currentPrice - currentPosition.entryPrice) / currentPosition.entryPrice;
+            elizaLogger.log(`Price change for ${pair.baseToken.symbol}: ${(priceChange * 100).toFixed(2)}%`);
+
+            // Take full profit check
+            if (priceChange >= SAFETY_LIMITS.TAKE_PROFIT) {
+                elizaLogger.log(`Take profit triggered for ${currentPosition.token}:`, {
+                    priceChange: priceChange * 100,
+                    threshold: SAFETY_LIMITS.TAKE_PROFIT * 100
+                });
+                await sellPosition({
+                    ...currentPosition,
+                    tokenAddress: pair.baseToken.address,
+                    amount: positionSize
+                }, currentPrice, runtime);
+                continue;
+            }
+
+            // Partial profit check
+            if (priceChange >= SAFETY_LIMITS.PARTIAL_TAKE && !currentPosition.partialTakeProfit) {
+                elizaLogger.log(`Partial take profit triggered for ${currentPosition.token}:`, {
+                    priceChange: priceChange * 100,
+                    threshold: SAFETY_LIMITS.PARTIAL_TAKE * 100
+                });
+                const halfPositionSize = positionSize * 0.5;
+                await sellPosition({
+                    ...currentPosition,
+                    tokenAddress: pair.baseToken.address,
+                    amount: halfPositionSize
+                }, currentPrice, runtime);
+                currentPosition.amount *= 0.5;
+                currentPosition.partialTakeProfit = true;
+                continue;
+            }
+
+            // Trailing stop check
+            if (currentPrice > (currentPosition.highestPrice || 0)) {
+                elizaLogger.log(`New highest price for ${currentPosition.token}: ${currentPrice}`);
+                currentPosition.highestPrice = currentPrice;
+            }
+
+            const dropFromHigh = ((currentPosition.highestPrice || currentPrice) - currentPrice) / (currentPosition.highestPrice || currentPrice);
+            elizaLogger.log(`Drop from high for ${currentPosition.token}: ${(dropFromHigh * 100).toFixed(2)}%`);
+
+            if (dropFromHigh >= SAFETY_LIMITS.TRAILING_STOP) {
+                elizaLogger.log(`Trailing stop triggered for ${currentPosition.token}:`, {
+                    dropFromHigh: dropFromHigh * 100,
+                    threshold: SAFETY_LIMITS.TRAILING_STOP * 100
+                });
+                await sellPosition({
+                    ...currentPosition,
+                    tokenAddress: pair.baseToken.address,
+                    amount: positionSize
+                }, currentPrice, runtime);
+                continue;
+            }
+
+            // Stop loss check
+            const priceDrop = (currentPosition.entryPrice - currentPrice) / currentPosition.entryPrice;
+            elizaLogger.log(`Price drop for ${currentPosition.token}: ${(priceDrop * 100).toFixed(2)}%`);
+
+            if (priceDrop > SAFETY_LIMITS.STOP_LOSS) {
+                elizaLogger.log(`Stop loss triggered for ${currentPosition.token}:`, {
+                    priceDrop: priceDrop * 100,
+                    threshold: SAFETY_LIMITS.STOP_LOSS * 100
+                });
+                const sellResult = await sellPosition({
+                    ...currentPosition,
+                    tokenAddress: pair.baseToken.address,
+                    amount: positionSize
+                }, currentPrice, runtime);
+
+                if (sellResult) {
+                    elizaLogger.log(`Successfully sold ${currentPosition.token} at stop loss`);
+                    if (callback) {
+                        callback({
+                            text: `🔴 Stop loss triggered: Sold ${currentPosition.token}\nEntry: $${currentPosition.entryPrice.toFixed(6)}\nExit: $${currentPrice.toFixed(6)}\nLoss: ${(priceDrop * 100).toFixed(2)}%`,
+                            content: {
+                                action: "STOP_LOSS",
+                                token: currentPosition.token,
+                                entryPrice: currentPosition.entryPrice,
+                                exitPrice: currentPrice,
+                                loss: priceDrop
+                            }
+                        });
+                    }
+                }
+                continue;
+            }
+
+            // Inside monitorExistingPositions, add this logging
+            elizaLogger.log(`Position analysis for ${pair.baseToken.symbol}:`, {
+                currentPrice,
+                entryPrice: currentPosition.entryPrice,
+                highestPrice: currentPosition.highestPrice,
+                priceChange: (priceChange * 100).toFixed(2) + '%',
+                dropFromHigh: (dropFromHigh * 100).toFixed(2) + '%',
+                triggers: {
+                    takeProfit: SAFETY_LIMITS.TAKE_PROFIT * 100 + '%',
+                    partialTake: SAFETY_LIMITS.PARTIAL_TAKE * 100 + '%',
+                    trailingStop: SAFETY_LIMITS.TRAILING_STOP * 100 + '%',
+                    stopLoss: SAFETY_LIMITS.STOP_LOSS * 100 + '%'
+                }
+            });
+
+        } catch (error) {
+            elizaLogger.error(`Error monitoring position for ${pair.baseToken?.symbol}:`, error);
+        }
+    }
+    elizaLogger.log("Position monitoring completed");
+}
+
+// Helper function to evaluate new trades
+async function evaluateNewTrades(
+    pairs: any[],
+    runtime: IAgentRuntime,
+    callback?: HandlerCallback
+): Promise<void> {
+    for (const pair of pairs) {
+        try {
+            if (!validateWalletAddress(pair.baseToken?.address)) {
+                continue;
+            }
+
+            // Skip if we have an active position
+            const currentPosition = positions.get(pair.baseToken.address);
+            if (currentPosition && !currentPosition.sold) {
+                continue;
+            }
+
+            // Get wallet balance
+            const balance = await getWalletBalance(runtime);
+
+            // Calculate position size for new trades
+            const positionSize = Math.min(
+                (pair.liquidity?.usd || 0) * SAFETY_LIMITS.MAX_POSITION_SIZE,
+                balance * 0.1
+            );
+
+            // Skip if position size too small
+            if (positionSize < SAFETY_LIMITS.MINIMUM_TRADE) {
+                elizaLogger.warn("Skipping trade - position size too small:", {
+                    calculatedSize: positionSize,
+                    minimumRequired: SAFETY_LIMITS.MINIMUM_TRADE,
+                    token: pair.baseToken.symbol
+                });
+                continue;
+            }
+
+            // Skip if liquidity too low
+            if ((pair.liquidity?.usd || 0) < SAFETY_LIMITS.MIN_LIQUIDITY) {
+                continue;
+            }
+
+            // Skip if volume too low
+            if ((pair.volume?.h24 || 0) < SAFETY_LIMITS.MIN_VOLUME) {
+                continue;
+            }
+
+            // Calculate trust score
+            const trustScore = await evaluateTrust(runtime, pair);
+
+            // Skip if trust score too low
+            if (trustScore < SAFETY_LIMITS.MIN_TRUST_SCORE) {
+                elizaLogger.warn(`Low trust score for ${pair.baseToken.symbol}: ${trustScore}`);
+                continue;
+            }
+
+            // Execute buy trade
+            const tradeResult = await executeTrade(runtime, {
+                tokenAddress: pair.baseToken.address,
+                amount: positionSize,
+                slippage: SAFETY_LIMITS.MAX_SLIPPAGE
+            });
+
+            if (tradeResult.success) {
+                // Track new position
+                positions.set(pair.baseToken.address, {
+                    token: pair.baseToken.symbol,
+                    tokenAddress: pair.baseToken.address,
+                    entryPrice: Number(pair.priceUsd),
+                    amount: positionSize,
+                    timestamp: Date.now(),
+                    initialMetrics: {
+                        trustScore,
+                        volume24h: pair.volume?.h24 || 0,
+                        liquidity: { usd: pair.liquidity?.usd || 0 },
+                        riskLevel: trustScore > 0.8 ? "LOW" : trustScore > 0.5 ? "MEDIUM" : "HIGH"
+                    }
+                });
+
+                // Save positions immediately after update
+                await savePositions(runtime);
+
+                if (callback) {
+                    callback({
+                        text: `🤖 Trade executed: ${pair.baseToken.symbol}\nAmount: $${positionSize.toFixed(2)}\nPrice: $${Number(pair.priceUsd).toFixed(6)}`,
+                        content: {
+                            ...tradeResult,
+                            symbol: pair.baseToken.symbol,
+                            amount: positionSize,
+                            price: pair.priceUsd,
+                            position: positions.get(pair.baseToken.address)
+                        }
+                    });
+                }
+
+                // Tweet the trade
+                await tweetTradeUpdate(runtime, {
+                    action: 'BUY',
+                    token: pair.baseToken.symbol,
+                    amount: positionSize,
+                    price: Number(pair.priceUsd),
+                    signature: tradeResult.signature
+                });
+            }
+        } catch (error) {
+            elizaLogger.error(`Error evaluating trade for ${pair.baseToken?.symbol}:`, error);
+        }
+    }
+}
+
+// Add position persistence
+async function loadPositions(runtime: IAgentRuntime): Promise<void> {
+    try {
+        const savedPositions = await runtime.cacheManager.get<Array<[string, Position]>>("trading_positions");
+        elizaLogger.log("Loading saved positions:", savedPositions);
+
+        if (savedPositions) {
+            positions.clear();
+            for (const [key, position] of savedPositions) {
+                positions.set(key, position);
+            }
+        }
+    } catch (error) {
+        elizaLogger.error("Error loading positions:", error);
+    }
+}
+
+async function savePositions(runtime: IAgentRuntime): Promise<void> {
+    try {
+        const positionsArray = Array.from(positions.entries());
+        await runtime.cacheManager.set("trading_positions", positionsArray);
+        elizaLogger.log("Positions saved:", positionsArray);
+    } catch (error) {
+        elizaLogger.error("Error saving positions:", error);
     }
 }
