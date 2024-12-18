@@ -33,7 +33,7 @@ describe("Model Provider Configuration", () => {
             const openAIModels = models[ModelProviderName.OPENAI].model;
             expect(openAIModels[ModelClass.SMALL]).toBe("gpt-4o-mini");
             expect(openAIModels[ModelClass.MEDIUM]).toBe("gpt-4o");
-            expect(openAIModels[ModelClass.LARGE]).toBe("gpt-4o");
+            expect(openAIModels[ModelClass.LARGE]).toBe("o1");
             expect(openAIModels[ModelClass.EMBEDDING]).toBe("text-embedding-3-small");
             expect(openAIModels[ModelClass.IMAGE]).toBe("dall-e-3");
         });
